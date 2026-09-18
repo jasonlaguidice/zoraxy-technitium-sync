@@ -124,15 +124,17 @@ panel covers:
 
 | Field | Default | Notes |
 |---|---|---|
-| Technitium base URL | `http://192.168.1.254:5380` | |
+| Technitium base URL | *(empty)* | Required — e.g. `http://192.168.1.254:5380`; there's no built-in default since it's specific to your Technitium server |
 | Technitium API token | *(empty)* | Generate one in Technitium's admin UI |
-| DNS zone | `shadowdrake.org` | Must already exist as a zone in Technitium |
+| DNS zone | *(empty)* | Required — must already exist as a zone in Technitium; no built-in default |
 | Record TTL | `300` seconds | |
 | Poll interval | `30` seconds | How often Zoraxy's proxy list is checked |
-| LAN IPv4 target | `192.168.1.24` | Where every managed A record points |
+| LAN IPv4 target | auto-detected | The outbound-facing LAN IP of the box the plugin is running on, detected at first run; override in the UI if it picks the wrong interface |
 | AAAA enabled | off | Global toggle, applies to every managed host |
-| LAN IPv6 target | *(empty)* | Used for every AAAA record when enabled |
+| LAN IPv6 target | auto-detected | Same auto-detection as LAN IPv4, at first run; falls back to blank if none is found. Only required if AAAA is enabled |
 | Instance ID | generated once | Used in the ownership TXT marker; read-only |
+
+The plugin won't be able to save its settings until the Technitium base URL and DNS zone are filled in — until then it sits idle and logs the missing configuration on every reconcile attempt rather than doing anything destructive.
 
 The status panel on the same page shows the last poll time, last error (if
 any), how many records are currently managed, and the hosts created,

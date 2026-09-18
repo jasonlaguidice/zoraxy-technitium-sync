@@ -10,17 +10,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
 )
 
 const (
-	DefaultTechnitiumBaseURL   = "http://192.168.1.254:5380"
-	DefaultZone                = "shadowdrake.org"
 	DefaultTTLSeconds          = 300
 	DefaultPollIntervalSeconds = 30
-	DefaultLANIPv4             = "192.168.1.24"
 
 	MinTTLSeconds          = 30
 	MinPollIntervalSeconds = 5
@@ -48,16 +46,47 @@ type Config struct {
 
 func defaultConfig() *Config {
 	return &Config{
-		TechnitiumBaseURL:   DefaultTechnitiumBaseURL,
-		Zone:                DefaultZone,
+		// Technitium base URL and zone have no sane default for a plugin
+		// someone else installs: they're specific to the operator's own DNS
+		// server. Left blank, Validate rejects saving until the user fills
+		// them in via the UI, and the reconcile loop just logs (non-fatally)
+		// until then.
+		TechnitiumBaseURL:   "",
+		Zone:                "",
 		TTLSeconds:          DefaultTTLSeconds,
 		PollIntervalSeconds: DefaultPollIntervalSeconds,
-		LANIPv4:             DefaultLANIPv4,
-		AAAAEnabled:         false,
-		LANIPv6:             "",
-		InstanceID:          newInstanceID(),
+		// Unlike the Technitium URL/zone, the LAN targets DO have a sane
+		// default: this plugin always runs on the Zoraxy box itself, so that
+		// box's own outbound-facing address is the right address for every
+		// managed record to point at. Detected once at first-run; blank
+		// (same as before) if detection fails.
+		LANIPv4:     detectLocalIPv4(),
+		AAAAEnabled: false,
+		LANIPv6:     detectLocalIPv6(),
+		InstanceID:  newInstanceID(),
 	}
 }
+
+// detectLocalIP returns the local address the OS routing table would use to
+// reach dialTarget, or "" if that can't be determined. Dialing UDP performs
+// no handshake and transmits nothing — it's just a local socket + route
+// lookup — so this is fast and safe to call at startup even without real
+// internet connectivity, as long as a route exists.
+func detectLocalIP(network, dialTarget string) string {
+	conn, err := net.Dial(network, dialTarget)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	udpAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return ""
+	}
+	return udpAddr.IP.String()
+}
+
+func detectLocalIPv4() string { return detectLocalIP("udp4", "8.8.8.8:80") }
+func detectLocalIPv6() string { return detectLocalIP("udp6", "[2001:4860:4860::8888]:80") }
 
 func newInstanceID() string {
 	var b [16]byte
@@ -77,12 +106,10 @@ func clone(c *Config) *Config {
 }
 
 func clampDefaults(c *Config) {
-	if c.TechnitiumBaseURL == "" {
-		c.TechnitiumBaseURL = DefaultTechnitiumBaseURL
-	}
-	if c.Zone == "" {
-		c.Zone = DefaultZone
-	}
+	// TechnitiumBaseURL and Zone are intentionally left alone here, blank or
+	// not: there is no default to fall back to, so a blank value is
+	// respected rather than overwritten (Validate is what stops a blank
+	// value from being saved going forward).
 	if c.TTLSeconds < MinTTLSeconds {
 		c.TTLSeconds = DefaultTTLSeconds
 	}
@@ -90,8 +117,15 @@ func clampDefaults(c *Config) {
 		c.PollIntervalSeconds = DefaultPollIntervalSeconds
 	}
 	if c.LANIPv4 == "" {
-		c.LANIPv4 = DefaultLANIPv4
+		// Re-attempt detection rather than leaving it blank: cheap,
+		// local-only, and gives a config that somehow ended up without a
+		// LAN target a chance to self-heal on every Load.
+		c.LANIPv4 = detectLocalIPv4()
 	}
+	// LANIPv6 is deliberately NOT re-detected here: it's optional, detected
+	// once at first-run creation time, and otherwise left exactly as stored
+	// (including intentionally blank) — Validate already enforces it being
+	// non-empty when AAAAEnabled is on.
 	if c.InstanceID == "" {
 		c.InstanceID = newInstanceID()
 	}

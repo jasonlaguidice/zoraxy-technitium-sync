@@ -48,8 +48,10 @@ func TestHandleConfig_GetReturnsCurrentConfig(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if payload.Zone != config.DefaultZone {
-		t.Fatalf("unexpected zone: %q", payload.Zone)
+	// A fresh config has no built-in Technitium zone default any more: it's
+	// specific to the operator's own DNS server, so it starts blank.
+	if payload.Zone != "" {
+		t.Fatalf("expected a fresh config to have a blank zone, got %q", payload.Zone)
 	}
 }
 
@@ -112,12 +114,12 @@ func TestHandleConfig_GetNeverReturnsRawToken(t *testing.T) {
 	s := newTestServer(t)
 	const secret = "super-secret-token-value"
 	rec := postConfig(s, configWritePayload{
-		TechnitiumBaseURL:   config.DefaultTechnitiumBaseURL,
+		TechnitiumBaseURL:   "http://10.0.0.1:5380",
 		TechnitiumToken:     secret,
-		Zone:                config.DefaultZone,
+		Zone:                "example.org",
 		TTLSeconds:          config.DefaultTTLSeconds,
 		PollIntervalSeconds: config.DefaultPollIntervalSeconds,
-		LANIPv4:             config.DefaultLANIPv4,
+		LANIPv4:             "10.0.0.2",
 	}, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("setup POST failed: %d: %s", rec.Code, rec.Body.String())
@@ -147,24 +149,24 @@ func TestHandleConfig_PostWithBlankTokenPreservesExisting(t *testing.T) {
 	const secret = "super-secret-token-value"
 
 	rec := postConfig(s, configWritePayload{
-		TechnitiumBaseURL:   config.DefaultTechnitiumBaseURL,
+		TechnitiumBaseURL:   "http://10.0.0.1:5380",
 		TechnitiumToken:     secret,
-		Zone:                config.DefaultZone,
+		Zone:                "example.org",
 		TTLSeconds:          config.DefaultTTLSeconds,
 		PollIntervalSeconds: config.DefaultPollIntervalSeconds,
-		LANIPv4:             config.DefaultLANIPv4,
+		LANIPv4:             "10.0.0.2",
 	}, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("setup POST failed: %d: %s", rec.Code, rec.Body.String())
 	}
 
 	rec = postConfig(s, configWritePayload{
-		TechnitiumBaseURL:   config.DefaultTechnitiumBaseURL,
+		TechnitiumBaseURL:   "http://10.0.0.1:5380",
 		TechnitiumToken:     "", // blank: must not clear the stored token
 		Zone:                "changed.example.org",
 		TTLSeconds:          config.DefaultTTLSeconds,
 		PollIntervalSeconds: config.DefaultPollIntervalSeconds,
-		LANIPv4:             config.DefaultLANIPv4,
+		LANIPv4:             "10.0.0.2",
 	}, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("second POST failed: %d: %s", rec.Code, rec.Body.String())
