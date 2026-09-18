@@ -1,0 +1,18 @@
+# Read-only reference clones — never part of this project's history
+/reference/
+
+# Build artifacts
+/bin/
+/dist/
+zoraxy-technitium-sync
+*.exe
+
+# Local plugin runtime data (created when the plugin actually runs)
+config.json
+*.log
+
+# Editor/OS cruft
+.DS_Store
+
+# Local Claude Code session state — not part of the project
+/.claude/

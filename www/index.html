@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="zoraxy.csrf.Token" content="{{.csrfToken}}">
+<title>Technitium Sync</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1b1b1b;
+    --bg: #ffffff;
+    --muted: #666666;
+    --border: #d7d7d7;
+    --accent: #2563eb;
+    --ok: #1a7f37;
+    --warn: #b45309;
+    --err: #c0392b;
+    --panel: #f7f7f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e8e8e8;
+      --bg: #16171a;
+      --muted: #a0a0a0;
+      --border: #33343a;
+      --accent: #5b9dff;
+      --ok: #3fbf60;
+      --warn: #e0a933;
+      --err: #e05c4d;
+      --panel: #1e1f23;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    max-width: 780px;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.sub { color: var(--muted); margin-top: 0; font-size: 13px; }
+  section {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    background: var(--panel);
+  }
+  section h2 { font-size: 15px; margin-top: 0; }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin: 12px 0 4px;
+  }
+  label .hint { font-weight: 400; color: var(--muted); }
+  input[type=text], input[type=password], input[type=number] {
+    width: 100%;
+    padding: 7px 9px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  .row { display: flex; gap: 16px; }
+  .row > div { flex: 1; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .checkbox-row input { width: auto; }
+  button {
+    margin-top: 16px;
+    padding: 8px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  #saveMsg { margin-left: 12px; font-size: 13px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 13px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.ok { background: rgba(26,127,55,0.15); color: var(--ok); }
+  .badge.err { background: rgba(192,57,43,0.15); color: var(--err); }
+  .warn-banner {
+    background: rgba(180,83,9,0.15);
+    color: var(--warn);
+    border: 1px solid var(--warn);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .host-list { font-size: 12px; color: var(--muted); word-break: break-all; }
+  code { font-size: 12px; }
+  .readonly { color: var(--muted); }
+</style>
+</head>
+<body>
+  <h1>Technitium Sync</h1>
+  <p class="sub">Keeps Technitium A/AAAA records in sync with Zoraxy's HTTP proxy host rules.</p>
+
+  <section>
+    <h2>Status</h2>
+    <div id="warnBanner"></div>
+    <dl id="statusList">
+      <dt>Last poll</dt><dd id="stLastPoll">&mdash;</dd>
+      <dt>Result</dt><dd id="stResult">&mdash;</dd>
+      <dt>Managed records</dt><dd id="stManaged">&mdash;</dd>
+      <dt>Created (last cycle)</dt><dd id="stCreated" class="host-list">&mdash;</dd>
+      <dt>Updated (last cycle)</dt><dd id="stUpdated" class="host-list">&mdash;</dd>
+      <dt>Deleted (last cycle)</dt><dd id="stDeleted" class="host-list">&mdash;</dd>
+      <dt>Skipped (foreign records)</dt><dd id="stSkipped" class="host-list">&mdash;</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Configuration</h2>
+    <form id="cfgForm">
+      <div class="row">
+        <div>
+          <label>Technitium base URL <span class="hint">e.g. http://192.168.1.254:5380</span></label>
+          <input type="text" id="technitium_base_url" required>
+        </div>
+        <div>
+          <label>Technitium API token <span class="hint" id="tokenHint"></span></label>
+          <input type="password" id="technitium_token" autocomplete="off" placeholder="enter API token">
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>DNS zone</label>
+          <input type="text" id="zone" required>
+        </div>
+        <div>
+          <label>Record TTL (seconds)</label>
+          <input type="number" id="ttl_seconds" min="30" required>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Poll interval (seconds)</label>
+          <input type="number" id="poll_interval_seconds" min="5" required>
+        </div>
+        <div>
+          <label>LAN IPv4 target <span class="hint">A records point here</span></label>
+          <input type="text" id="lan_ipv4" required>
+        </div>
+      </div>
+
+      <div class="checkbox-row">
+        <input type="checkbox" id="aaaa_enabled">
+        <label for="aaaa_enabled" style="margin:0;">Also create AAAA records (global toggle)</label>
+      </div>
+      <div>
+        <label>LAN IPv6 target <span class="hint">used for every managed host when AAAA is enabled</span></label>
+        <input type="text" id="lan_ipv6">
+      </div>
+
+      <label>Instance ID <span class="hint">generated once, used in the ownership TXT marker</span></label>
+      <input type="text" id="instance_id" class="readonly" readonly>
+
+      <button type="submit" id="saveBtn">Save</button>
+      <span id="saveMsg"></span>
+    </form>
+  </section>
+
+<script>
+(function () {
+  var csrfToken = document.querySelector('meta[name="zoraxy.csrf.Token"]').content;
+  var base = window.location.pathname.replace(/\/index\.html$/, '').replace(/\/$/, '');
+
+  function apiURL(path) { return base + path; }
+
+  function fmtList(arr) {
+    if (!arr || arr.length === 0) return '(none)';
+    return arr.join(', ');
+  }
+
+  function fmtTime(iso) {
+    if (!iso || iso.indexOf('0001-01-01') === 0) return 'never';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return 'never';
+    return d.toLocaleString();
+  }
+
+  function loadConfig() {
+    fetch(apiURL('/api/config')).then(function (r) { return r.json(); }).then(function (cfg) {
+      document.getElementById('technitium_base_url').value = cfg.technitium_base_url || '';
+      // The server never returns the real token (GET /api/config only says
+      // whether one is set), so this field always starts blank. Leaving it
+      // blank on save keeps whatever token is already stored.
+      var tokenInput = document.getElementById('technitium_token');
+      tokenInput.value = '';
+      tokenInput.placeholder = cfg.technitium_token_set
+        ? '(unchanged — leave blank to keep current token)'
+        : 'enter API token';
+      document.getElementById('tokenHint').textContent = cfg.technitium_token_set ? '(a token is set)' : '(no token set)';
+      document.getElementById('zone').value = cfg.zone || '';
+      document.getElementById('ttl_seconds').value = cfg.ttl_seconds || '';
+      document.getElementById('poll_interval_seconds').value = cfg.poll_interval_seconds || '';
+      document.getElementById('lan_ipv4').value = cfg.lan_ipv4 || '';
+      document.getElementById('aaaa_enabled').checked = !!cfg.aaaa_enabled;
+      document.getElementById('lan_ipv6').value = cfg.lan_ipv6 || '';
+      document.getElementById('instance_id').value = cfg.instance_id || '';
+    }).catch(function (err) {
+      document.getElementById('saveMsg').textContent = 'Failed to load config: ' + err;
+    });
+  }
+
+  function loadStatus() {
+    fetch(apiURL('/api/status')).then(function (r) { return r.json(); }).then(function (st) {
+      document.getElementById('stLastPoll').textContent = fmtTime(st.last_poll_time);
+      var resultEl = document.getElementById('stResult');
+      if (st.last_success) {
+        resultEl.innerHTML = '<span class="badge ok">ok</span>';
+      } else if (st.last_error) {
+        resultEl.innerHTML = '<span class="badge err">error</span> ' + st.last_error;
+      } else {
+        resultEl.textContent = 'no poll yet';
+      }
+      document.getElementById('stManaged').textContent = st.managed_count || 0;
+      document.getElementById('stCreated').textContent = fmtList(st.created);
+      document.getElementById('stUpdated').textContent = fmtList(st.updated);
+      document.getElementById('stDeleted').textContent = fmtList(st.deleted);
+      document.getElementById('stSkipped').textContent = fmtList(st.skipped);
+
+      var banner = document.getElementById('warnBanner');
+      if (st.deletions_skipped) {
+        banner.innerHTML = '<div class="warn-banner">Deletions were skipped this cycle: Zoraxy\'s proxy list looked ' +
+          'suspiciously small (circuit breaker). Creates/updates still ran normally.</div>';
+      } else {
+        banner.innerHTML = '';
+      }
+    }).catch(function () { /* status endpoint not reachable yet; ignore */ });
+  }
+
+  document.getElementById('cfgForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var btn = document.getElementById('saveBtn');
+    var msg = document.getElementById('saveMsg');
+    btn.disabled = true;
+    msg.textContent = 'Saving...';
+    msg.style.color = '';
+
+    var payload = {
+      technitium_base_url: document.getElementById('technitium_base_url').value.trim(),
+      technitium_token: document.getElementById('technitium_token').value,
+      zone: document.getElementById('zone').value.trim(),
+      ttl_seconds: parseInt(document.getElementById('ttl_seconds').value, 10),
+      poll_interval_seconds: parseInt(document.getElementById('poll_interval_seconds').value, 10),
+      lan_ipv4: document.getElementById('lan_ipv4').value.trim(),
+      aaaa_enabled: document.getElementById('aaaa_enabled').checked,
+      lan_ipv6: document.getElementById('lan_ipv6').value.trim()
+    };
+
+    fetch(apiURL('/api/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Zoraxy-Csrf': csrfToken },
+      body: JSON.stringify(payload)
+    }).then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    }).then(function (result) {
+      btn.disabled = false;
+      if (result.ok) {
+        msg.style.color = 'var(--ok)';
+        msg.textContent = 'Saved.';
+        loadConfig();
+        setTimeout(loadStatus, 500);
+      } else {
+        msg.style.color = 'var(--err)';
+        msg.textContent = 'Error: ' + (result.body && result.body.error ? result.body.error : 'save failed');
+      }
+    }).catch(function (err) {
+      btn.disabled = false;
+      msg.style.color = 'var(--err)';
+      msg.textContent = 'Error: ' + err;
+    });
+  });
+
+  loadConfig();
+  loadStatus();
+  setInterval(loadStatus, 5000);
+})();
+</script>
+</body>
+</html>

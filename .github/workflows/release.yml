@@ -1,0 +1,123 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - name: .introspect must match what the binary reports
+        run: go run . -introspect | diff -u .introspect -
+
+  release:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Determine the release version from the tag
+        run: |
+          set -eu
+          # GITHUB_REF_NAME is exactly the tag name on a tag-triggered run,
+          # e.g. "v0.0.1" -- strip the leading "v" so it matches the "X.Y.Z"
+          # shape version.go's parseVersion expects.
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Build the release binaries
+        run: |
+          set -eu
+          # The plugin store derives the asset name from the plugin ID by
+          # keeping only the last dot-separated segment (see tools/dirupdate2
+          # in aroz-online/zoraxy-official-plugins), so the binary must be
+          # zoraxy-technitium-sync_<os>_<arch>, not the full reverse-DNS ID.
+          #
+          # Bare binaries only, which is what every other plugin in the
+          # registry ships: the store downloads one directly, and a manual
+          # install just drops it into a folder of the same name.
+          #
+          # All seven targets the indexer builds URLs for. It emits them
+          # unconditionally, without checking they exist, so a missing one is
+          # not "unavailable" to the user -- it is a 404 mid-install.
+          #
+          # -ldflags -X main.version=$VERSION bakes the tag's version into
+          # each binary's IntroSpect, which Zoraxy's plugin-store
+          # update-check reads to detect new releases -- see version.go.
+          ASSET=zoraxy-technitium-sync
+          mkdir -p out
+          for target in linux/amd64 linux/386 linux/arm linux/arm64 \
+                        linux/mipsle linux/riscv64 windows/amd64; do
+            os=${target%/*}; arch=${target#*/}
+            name="out/${ASSET}_${os}_${arch}"
+            [ "$os" = windows ] && name="${name}.exe"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-X main.version=$VERSION" -o "$name" .
+          done
+          ls -l out
+
+      - name: Capture this release's introspect output
+        # Same -ldflags as the release binaries, so the version embedded in
+        # docs/index.json's PluginIntroSpect matches what was just built and
+        # published, not version.go's "0.0.0" dev default.
+        run: go run -ldflags "-X main.version=$VERSION" . -introspect > "$RUNNER_TEMP/introspect.json"
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: out/*
+
+      # The Plugin Store index (docs/index.json, served by GitHub Pages) is
+      # regenerated after the release assets exist, since its DownloadURLs
+      # and embedded PluginIntroSpect describe exactly the assets/version
+      # just published.
+      - name: Regenerate the Plugin Store index
+        run: |
+          set -eu
+          BASE="https://github.com/${{ github.repository }}/releases/latest/download"
+          ASSET=zoraxy-technitium-sync
+          mkdir -p docs
+          jq -n \
+            --slurpfile introspect "$RUNNER_TEMP/introspect.json" \
+            --arg base "$BASE" \
+            --arg asset "$ASSET" \
+            '[{
+              IconPath: "",
+              PluginIntroSpect: $introspect[0],
+              DownloadURLs: {
+                linux_amd64:   ($base + "/" + $asset + "_linux_amd64"),
+                linux_386:     ($base + "/" + $asset + "_linux_386"),
+                linux_arm:     ($base + "/" + $asset + "_linux_arm"),
+                linux_arm64:   ($base + "/" + $asset + "_linux_arm64"),
+                linux_mipsle:  ($base + "/" + $asset + "_linux_mipsle"),
+                linux_riscv64: ($base + "/" + $asset + "_linux_riscv64"),
+                windows_amd64: ($base + "/" + $asset + "_windows_amd64.exe")
+              }
+            }]' > docs/index.json
+
+      - name: Commit the index if it changed
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- docs/index.json; then
+            echo "docs/index.json unchanged"
+            exit 0
+          fi
+          git add docs/index.json
+          git commit -m "Update Plugin Store index [skip ci]"
+          git push origin HEAD:main

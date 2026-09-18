@@ -1,0 +1,26 @@
+{
+ "id": "com.github.jasonlaguidice.zoraxy-technitium-sync",
+ "name": "Technitium Sync",
+ "author": "jasonlaguidice",
+ "author_contact": "https://matrix.to/#/@jason:shadowdrake.org",
+ "description": "Keeps Technitium DNS A/AAAA records in sync with Zoraxy's HTTP proxy host rules",
+ "url": "https://github.com/jasonlaguidice/zoraxy-technitium-sync",
+ "type": 1,
+ "version_major": 0,
+ "version_minor": 0,
+ "version_patch": 0,
+ "static_capture_paths": null,
+ "static_capture_ingress": "",
+ "dynamic_capture_sniff": "",
+ "dynamic_capture_ingress": "",
+ "ui_path": "/ui",
+ "subscription_path": "",
+ "subscriptions_events": null,
+ "permitted_api_endpoints": [
+  {
+   "method": "GET",
+   "endpoint": "/plugin/api/proxy/list",
+   "reason": "Read configured HTTP proxy host rules (hostname + aliases + enabled state) to compute which DNS records should exist"
+  }
+ ]
+}
