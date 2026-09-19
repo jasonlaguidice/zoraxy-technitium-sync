@@ -36,10 +36,10 @@ disabled.
 ## Installing on a Zoraxy host
 
 Zoraxy plugins are plain binaries, not archives or containers: the binary's
-filename must match its containing folder's name. There are three ways to
+filename must match its containing folder's name. There are two ways to
 get this plugin onto a Zoraxy host.
 
-### 1. Custom Plugin Store source
+### 1. Custom Plugin Store source (recommended)
 
 This repository publishes its own self-hosted Plugin Store index via GitHub
 Pages, updated automatically on every release. In Zoraxy's admin UI, go to
