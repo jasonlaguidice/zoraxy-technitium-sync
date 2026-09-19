@@ -1,8 +1,6 @@
 // Package reconciler computes and applies the difference between the
 // hostnames Zoraxy currently wants routed and the DNS records Technitium
-// currently has, without knowing anything about HTTP, Zoraxy's API shape or
-// Technitium's API shape. It depends only on the two small interfaces below,
-// so it is fully testable with in-memory fakes.
+// currently has
 package reconciler
 
 import (
@@ -124,19 +122,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (Result, error) {
 	currentCount := len(desiredSet)
 
 	previousGoodCount := r.lastGoodHostCount
-	skipDeletes := false
-	if currentCount == 0 {
-		skipDeletes = true
-	} else if previousGoodCount > 0 && currentCount*2 < previousGoodCount {
-		skipDeletes = true
-	}
-	// Always advance the baseline to the count just observed, even when this
-	// cycle tripped the breaker. Otherwise a genuine, permanent drop in host
-	// count (not a transient glitch) would keep comparing every future cycle
-	// against the stale pre-drop baseline and disable deletions forever
-	// instead of just for the one cycle the breaker is meant to cover: the
-	// next cycle's comparison is against the count we just saw, so it only
-	// trips again if the count drops by half a second time in a row.
+	skipDeletes := previousGoodCount > 0 && currentCount*2 < previousGoodCount
 	r.lastGoodHostCount = currentCount
 	res.DeletionsSkipped = skipDeletes
 

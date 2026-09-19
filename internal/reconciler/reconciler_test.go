@@ -330,6 +330,40 @@ func TestReconcile_CircuitBreakerSelfClearsAfterSustainedDrop(t *testing.T) {
 	}
 }
 
+func TestReconcile_CircuitBreakerSelfClearsAfterDropToZero(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"only.example.com"}}
+	store := newFakeStore()
+	store.hosts["only.example.com"] = HostRecords{AIPs: []string{"192.168.1.24"}, OwnedByUs: true}
+	r := New(hosts, store, Options{IPv4Target: "192.168.1.24"})
+	r.lastGoodHostCount = 1
+
+	// Cycle 1: the only host is removed, count drops to 0 -> breaker trips.
+	hosts.hosts = nil
+	res1, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res1.DeletionsSkipped {
+		t.Fatalf("expected the first cycle at zero to trip the breaker")
+	}
+	if _, exists := store.hosts["only.example.com"]; !exists {
+		t.Fatalf("only.example.com must survive the tripped cycle")
+	}
+
+	// Cycle 2: still zero - a real, sustained empty state, not a blip - the
+	// breaker must self-clear and the removed host must finally be deleted.
+	res2, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res2.DeletionsSkipped {
+		t.Fatalf("expected the breaker to self-clear on the second consecutive cycle at zero")
+	}
+	if len(res2.Deleted) != 1 || res2.Deleted[0] != "only.example.com" {
+		t.Fatalf("expected only.example.com to finally be deleted, got %+v", res2)
+	}
+}
+
 func TestReconcile_AAAAEnabledCreatesAndUpdates(t *testing.T) {
 	hosts := &fakeHostLister{hosts: []string{"a.example.com", "b.example.com"}}
 	store := newFakeStore()
