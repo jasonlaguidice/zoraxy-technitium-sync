@@ -86,7 +86,13 @@ func detectLocalIP(network, dialTarget string) string {
 }
 
 func detectLocalIPv4() string { return detectLocalIP("udp4", "8.8.8.8:80") }
-func detectLocalIPv6() string { return detectLocalIP("udp6", "[2001:4860:4860::8888]:80") }
+
+// detectLocalIPv6 is platform-specific: see detect_ipv6_linux.go and
+// detect_ipv6_other.go. The UDP-dial trick used above for IPv4 has no
+// privacy-extension equivalent to worry about, but on Linux it picks
+// whatever address outbound routing prefers, which by default is a
+// temporary/privacy address (RFC 4941) that rotates — the wrong thing to
+// point a DNS record at.
 
 func newInstanceID() string {
 	var b [16]byte

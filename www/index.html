@@ -169,7 +169,7 @@
       <label>Instance ID <span class="hint">generated once, used in the ownership TXT marker</span></label>
       <input type="text" id="instance_id" class="readonly" readonly>
 
-      <button type="submit" id="saveBtn">Save</button>
+      <button type="button" id="saveBtn">Save</button>
       <span id="saveMsg"></span>
     </form>
   </section>
@@ -244,8 +244,15 @@
     }).catch(function () { /* status endpoint not reachable yet; ignore */ });
   }
 
-  document.getElementById('cfgForm').addEventListener('submit', function (e) {
-    e.preventDefault();
+  // A plain button + click handler, not a form submit listener: this plugin
+  // panel is loaded in a sandboxed iframe by Zoraxy's admin UI, and iframe
+  // sandboxes without the "allow-forms" token block the browser's native
+  // form-submission navigation outright - even when a submit handler calls
+  // preventDefault(), some browsers still log/enforce the sandbox check on
+  // the underlying <form> submit. Skipping form submission entirely (no
+  // type="submit" button, so there's nothing for Enter-key implicit
+  // submission to trigger either) avoids that restriction altogether.
+  document.getElementById('saveBtn').addEventListener('click', function () {
     var btn = document.getElementById('saveBtn');
     var msg = document.getElementById('saveMsg');
     btn.disabled = true;
@@ -265,7 +272,12 @@
 
     fetch(apiURL('/api/config'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Zoraxy-Csrf': csrfToken },
+      // Zoraxy's own front-door CSRF middleware (gorilla/csrf) checks for the
+      // token under its own default header name, X-CSRF-Token - not
+      // X-Zoraxy-Csrf, which is only the name Zoraxy uses to hand the token
+      // to plugins for embedding in pages. Without X-CSRF-Token, Zoraxy
+      // rejects the request with 403 before it ever reaches this plugin.
+      headers: { 'Content-Type': 'application/json', 'X-Zoraxy-Csrf': csrfToken, 'X-CSRF-Token': csrfToken },
       body: JSON.stringify(payload)
     }).then(function (r) {
       return r.json().then(function (body) { return { ok: r.ok, body: body }; });
