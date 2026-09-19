@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	plugin "github.com/jasonlaguidice/zoraxy-technitium-sync/mod/zoraxy_plugin"
+	plugin "imuslab.com/zoraxy/mod/plugins/zoraxy_plugin"
 
 	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/config"
 	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/reconciler"

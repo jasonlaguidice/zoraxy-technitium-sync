@@ -17,9 +17,10 @@ import "net/http"
 // URL (see main.go's IntroSpec) is rendered by Zoraxy's plugin list as a
 // working link, and that link is the offer.
 //
-// The obligation arrives with mod/zoraxy_plugin/, which is copied verbatim
-// from Zoraxy's AGPL source tree. It is inherited rather than chosen, and it
-// is not ours to waive on tobychui's behalf.
+// The obligation arrives with third_party/zoraxy/, the git submodule this
+// plugin's Zoraxy SDK dependency lives in (pinned to v3.3.4 of Zoraxy's own
+// AGPL source tree). It is inherited rather than chosen, and it is not ours
+// to waive on tobychui's behalf.
 func licenseHandler(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		b, err := content.ReadFile(name)

@@ -7,6 +7,7 @@ the terms of the GNU Affero General Public License as published by the Free
 Software Foundation, either version 3 of the License, or (at your option) any
 later version. See LICENSE.
 
-This program contains code copied verbatim from Zoraxy
-(https://github.com/tobychui/zoraxy), which is licensed under the same terms:
-see mod/zoraxy_plugin/.
+This program depends on the plugin SDK from Zoraxy
+(https://github.com/tobychui/zoraxy, pinned to v3.3.4), brought in as a git
+submodule at third_party/zoraxy since that SDK package is not published as
+a standalone module. It is licensed under the same terms.

@@ -1,0 +1,3 @@
+[submodule "third_party/zoraxy"]
+	path = third_party/zoraxy
+	url = https://github.com/tobychui/zoraxy.git

@@ -12,11 +12,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go vet ./...
-      - run: go test ./...
+      # Scoped to our own packages ("." and "./internal/...") rather than a
+      # bare "./...": the zoraxy_plugin SDK now lives in a git submodule at
+      # third_party/zoraxy, checked out as the full tobychui/zoraxy repo
+      # (its go.mod is only at third_party/zoraxy/src/go.mod). Everything
+      # under third_party/zoraxy/src is its own module and Go correctly
+      # excludes it from "./..." on that basis alone, and almost everything
+      # else in that checkout (tools/*, example/plugins/*, docs/plugins)
+      # also declares its own go.mod -- except for one straggler,
+      # third_party/zoraxy/tools/dns_challenge_update/code-gen, which has
+      # no go.mod of its own and so would otherwise be swept into a bare
+      # "./..." as if it were one of our own packages.
+      - run: go vet . ./internal/...
+      - run: go test . ./internal/...
       - name: .introspect must match what the binary reports
         run: go run . -introspect | diff -u .introspect -
 
@@ -28,6 +41,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
