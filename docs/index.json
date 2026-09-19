@@ -1,6 +1,6 @@
 [
   {
-    "IconPath": "",
+    "IconPath": "https://raw.githubusercontent.com/jasonlaguidice/zoraxy-technitium-sync/main/icon.png",
     "PluginIntroSpect": {
       "id": "com.github.jasonlaguidice.zoraxy-technitium-sync",
       "name": "Technitium Sync",

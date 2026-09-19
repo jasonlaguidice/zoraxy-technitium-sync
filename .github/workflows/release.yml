@@ -105,13 +105,15 @@ jobs:
           set -eu
           BASE="https://github.com/${{ github.repository }}/releases/latest/download"
           ASSET=zoraxy-technitium-sync
+          ICON="https://raw.githubusercontent.com/${{ github.repository }}/main/icon.png"
           mkdir -p docs
           jq -n \
             --slurpfile introspect "$RUNNER_TEMP/introspect.json" \
             --arg base "$BASE" \
             --arg asset "$ASSET" \
+            --arg icon "$ICON" \
             '[{
-              IconPath: "",
+              IconPath: $icon,
               PluginIntroSpect: $introspect[0],
               DownloadURLs: {
                 linux_amd64:   ($base + "/" + $asset + "_linux_amd64"),
