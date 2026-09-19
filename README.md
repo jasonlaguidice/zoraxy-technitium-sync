@@ -32,31 +32,6 @@ disabled.
 - **Restart recovery**: ownership is never cached only in memory — every
   reconcile cycle (including the first one after a restart) re-derives which
   hostnames it owns directly from the TXT markers already in the zone.
-- **Safety circuit breaker**: if a poll of Zoraxy's proxy list comes back
-  empty, or with fewer than half the hostnames the last successful poll saw,
-  the plugin treats it as a likely transient Zoraxy API glitch and skips
-  *deletions* for that cycle only (creates/updates still run normally).
-
-## Building
-
-Requires Go 1.25+.
-
-```sh
-go build -o zoraxy-technitium-sync .
-```
-
-Run the unit tests:
-
-```sh
-go test ./...
-```
-
-Verify the plugin's self-description (used by Zoraxy to discover it, no
-running Zoraxy instance required):
-
-```sh
-./zoraxy-technitium-sync -introspect
-```
 
 ## Installing on a Zoraxy host
 
@@ -64,7 +39,22 @@ Zoraxy plugins are plain binaries, not archives or containers: the binary's
 filename must match its containing folder's name. There are three ways to
 get this plugin onto a Zoraxy host.
 
-### 1. Manual install
+### 1. Custom Plugin Store source
+
+This repository publishes its own self-hosted Plugin Store index via GitHub
+Pages, updated automatically on every release. In Zoraxy's admin UI, go to
+**Settings -> Plugin Store -> Add Source** and paste:
+
+```
+https://jasonlaguidice.github.io/zoraxy-technitium-sync/index.json
+```
+
+Zoraxy will then list "Technitium Sync" in its Plugin Store and handle
+downloading and updating the right binary for your host.
+
+Enable "Technitium Sync" from Zoraxy's plugin list.
+
+### 2. Manual install
 
 Download the release asset matching your host's OS/architecture from the
 [latest release](https://github.com/jasonlaguidice/zoraxy-technitium-sync/releases/latest)
@@ -83,39 +73,7 @@ reload plugins):
 chmod +x <zoraxy data dir>/plugins/zoraxy-technitium-sync/zoraxy-technitium-sync
 ```
 
-Enable "Technitium Sync" from Zoraxy's plugin list. Zoraxy launches the
-binary itself, passing it a `-configure=...` payload with the local port to
-bind to and an API key scoped to the one endpoint this plugin declares it
-needs (`GET /plugin/api/proxy/list`).
-
-### 2. Custom Plugin Store source
-
-This repository publishes its own self-hosted Plugin Store index via GitHub
-Pages, updated automatically on every release. In Zoraxy's admin UI, go to
-**Settings -> Plugin Store -> Add Source** and paste:
-
-```
-https://jasonlaguidice.github.io/zoraxy-technitium-sync/index.json
-```
-
-Zoraxy will then list "Technitium Sync" in its Plugin Store and handle
-downloading and updating the right binary for your host.
-
-### 3. Official Zoraxy Plugin Store
-
-Submission to the official
-[aroz-online/zoraxy-official-plugins](https://github.com/aroz-online/zoraxy-official-plugins)
-registry is planned (the draft entry lives at
-[`publishing/apps-entry.json`](publishing/apps-entry.json) in this repo,
-pending review before it's submitted). Once that PR is merged, the plugin
-will show up in Zoraxy's built-in Plugin Store with no extra configuration —
-just search for "Technitium Sync".
-
-### After installing, by any method
-
-The plugin creates a `config.json` file next to its own binary on first run
-(atomically written, so a crash mid-write can't corrupt it). You never need
-to hand-edit it — everything is configured from the plugin's web UI.
+Enable "Technitium Sync" from Zoraxy's plugin list.
 
 ## Configuring
 
@@ -124,40 +82,66 @@ panel covers:
 
 | Field | Default | Notes |
 |---|---|---|
-| Technitium base URL | *(empty)* | Required — e.g. `http://192.168.1.254:5380`; there's no built-in default since it's specific to your Technitium server |
+| Technitium base URL | *(empty)* | Required — e.g. `http://192.168.1.254:5380` |
 | Technitium API token | *(empty)* | Generate one in Technitium's admin UI |
-| DNS zone | *(empty)* | Required — must already exist as a zone in Technitium; no built-in default |
-| Record TTL | `300` seconds | |
+| DNS zone | *(empty)* | Required |
+| Record TTL | `300` seconds |  |
 | Poll interval | `30` seconds | How often Zoraxy's proxy list is checked |
 | LAN IPv4 target | auto-detected | The outbound-facing LAN IP of the box the plugin is running on, detected at first run; override in the UI if it picks the wrong interface |
 | AAAA enabled | off | Global toggle, applies to every managed host |
 | LAN IPv6 target | auto-detected | Same auto-detection as LAN IPv4, at first run; falls back to blank if none is found. Only required if AAAA is enabled |
 | Instance ID | generated once | Used in the ownership TXT marker; read-only |
 
-The plugin won't be able to save its settings until the Technitium base URL and DNS zone are filled in — until then it sits idle and logs the missing configuration on every reconcile attempt rather than doing anything destructive.
-
 The status panel on the same page shows the last poll time, last error (if
 any), how many records are currently managed, and the hosts created,
 updated, deleted or skipped on the most recent cycle.
 
-## Scope
+## Building
 
-This is a v1 that intentionally does not support: multiple DNS zones,
-per-host AAAA overrides, a change-notification webhook (Zoraxy's plugin SDK
-doesn't currently expose one for proxy host rule changes), or any
-plugin-to-plugin messaging. It manages exactly one thing: A/AAAA records for
-Zoraxy's enabled HTTP proxy hosts and their aliases, in one Technitium zone.
+Requires Go 1.25+.
+
+The Zoraxy plugin SDK (`imuslab.com/zoraxy/mod/plugins/zoraxy_plugin`) is
+brought in as a git submodule at `third_party/zoraxy` — it isn't a
+standalone module, it's a subdirectory of the full
+[tobychui/zoraxy](https://github.com/tobychui/zoraxy) application repo, so
+that whole repo is checked out (pinned to `v3.3.4`) and wired in via a
+`replace` directive in `go.mod`. Clone with submodules:
+
+```sh
+git clone --recurse-submodules https://github.com/jasonlaguidice/zoraxy-technitium-sync.git
+```
+
+or, if you already have a plain clone:
+
+```sh
+git submodule update --init
+```
+
+```sh
+go build -o zoraxy-technitium-sync .
+```
+
+Run the unit tests:
+
+```sh
+go test . ./internal/...
+```
+
+Verify the plugin's self-description (used by Zoraxy to discover it, no
+running Zoraxy instance required):
+
+```sh
+./zoraxy-technitium-sync -introspect
+```
 
 ## License
 
 Copyright (C) 2026 Jason LaGuidice
 
-**AGPL-3.0-or-later**, the same license as Zoraxy itself.
+**AGPL-3.0-or-later**
 
-`mod/zoraxy_plugin/` is copied verbatim from Zoraxy's source tree
-(https://github.com/tobychui/zoraxy), so that code is AGPL wherever it
-travels; matching the license means there is nothing to reconcile and no
-exception to maintain. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+The Zoraxy plugin SDK this depends on lives in `third_party/zoraxy/` and is AGPL under the same terms. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
 
 The license text also travels inside the binary. Release assets are bare
 binaries — Zoraxy's registry indexer builds direct download URLs, so nothing
@@ -170,12 +154,3 @@ running plugin:
 | --- | --- |
 | `/plugin.ui/com.github.jasonlaguidice.zoraxy-technitium-sync/license` | the AGPL-3.0 text |
 | `/plugin.ui/com.github.jasonlaguidice.zoraxy-technitium-sync/notice` | NOTICE |
-
-Both are relative to the Zoraxy admin origin: Zoraxy strips
-`/plugin.ui/<id>` and proxies what is left onto the plugin's own `/ui`, so
-the `/ui` does not appear in the address.
-
-The offer of the complete corresponding source that AGPL §13 requires of a
-program used over a network is the repository link in Zoraxy's plugin
-manager, which comes from this plugin's own declared `url` (see
-[main.go](main.go)).
