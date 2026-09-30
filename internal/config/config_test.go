@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/svcparam"
 )
 
 func TestLoad_CreatesDefaultConfigWhenMissing(t *testing.T) {
@@ -204,5 +206,181 @@ func TestValidate_RequiresLANIPv4(t *testing.T) {
 	cfg.LANIPv4 = ""
 	if err := Validate(cfg); err == nil {
 		t.Fatalf("expected error for blank lan ipv4")
+	}
+}
+
+// TestLoad_DefaultsHTTPSOffWithAutoHintsOn checks the fresh-config defaults
+// for the HTTPS record settings: the toggle is off (opt-in like AAAA), the
+// priority starts at 0 (alias mode) and both automatic-hint options default
+// to on, mirroring Technitium's own "Automatic Hints" option.
+func TestLoad_DefaultsHTTPSOffWithAutoHintsOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.HTTPSEnabled {
+		t.Errorf("expected https toggle off by default")
+	}
+	if cfg.HTTPSPriorityValue() != 1 {
+		t.Errorf("expected https priority 1 by default, got %d", cfg.HTTPSPriorityValue())
+	}
+	if cfg.HTTPSTargetName != "" {
+		t.Errorf("expected blank https target name by default, got %q", cfg.HTTPSTargetName)
+	}
+	if len(cfg.HTTPSParams) != 0 {
+		t.Errorf("expected no https params by default, got %+v", cfg.HTTPSParams)
+	}
+	if !cfg.AutoIPv4HintEnabled() || !cfg.AutoIPv6HintEnabled() {
+		t.Errorf("expected automatic hints to default to on, got %v/%v", cfg.AutoIPv4HintEnabled(), cfg.AutoIPv6HintEnabled())
+	}
+}
+
+// TestLoad_OldConfigWithoutHTTPSFieldsDefaultsAutoHintsOn covers the upgrade
+// path: a config.json written by an older plugin version has no
+// https_auto_ipv4_hint/https_auto_ipv6_hint fields at all, and those must
+// default to on (the same default a fresh config gets) rather than to the
+// zero value off.
+func TestLoad_OldConfigWithoutHTTPSFieldsDefaultsAutoHintsOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	old := `{"technitium_base_url":"http://technitium.example:5380","zone":"example.org","ttl_seconds":300,"poll_interval_seconds":30,"lan_ipv4":"192.0.2.1","lan_ipv6":"2001:db8::1","instance_id":"x"}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.HTTPSEnabled {
+		t.Errorf("expected https toggle off when absent from disk")
+	}
+	if !cfg.AutoIPv4HintEnabled() || !cfg.AutoIPv6HintEnabled() {
+		t.Errorf("expected absent automatic hints to default to on, got %v/%v", cfg.AutoIPv4HintEnabled(), cfg.AutoIPv6HintEnabled())
+	}
+	if cfg.HTTPSPriorityValue() != 1 {
+		t.Errorf("expected absent https priority to default to 1, got %d", cfg.HTTPSPriorityValue())
+	}
+}
+
+// TestLoad_ExplicitZeroPriorityIsPreserved makes sure an explicitly stored
+// priority 0 (alias mode) is not mistaken for "absent" and reset to 1.
+func TestLoad_ExplicitZeroPriorityIsPreserved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	old := `{"technitium_base_url":"http://technitium.example:5380","zone":"example.org","ttl_seconds":300,"poll_interval_seconds":30,"lan_ipv4":"192.0.2.1","instance_id":"x","https_priority":0}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.HTTPSPriorityValue() != 0 {
+		t.Errorf("expected explicit priority 0 to be preserved, got %d", cfg.HTTPSPriorityValue())
+	}
+}
+
+// TestValidate_HTTPSSettings covers the https-only validation rules, which
+// apply only while the toggle is on.
+func TestValidate_HTTPSSettings(t *testing.T) {
+	// Off: everything is inert and must not block a save.
+	cfg := validConfigForTest()
+	cfg.HTTPSEnabled = false
+	cfg.HTTPSPriority = intPtr(70000)
+	cfg.HTTPSParams = []svcparam.Param{{Key: "bogus", Value: "x"}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("expected https settings to be inert while disabled, got: %v", err)
+	}
+
+	// On: priority must stay in the uint16 range (0 = alias mode).
+	cfg = validConfigForTest()
+	cfg.HTTPSEnabled = true
+	cfg.HTTPSPriority = intPtr(70000)
+	if err := Validate(cfg); err == nil {
+		t.Fatalf("expected error for https priority above 65535")
+	}
+	cfg.HTTPSPriority = intPtr(-1)
+	if err := Validate(cfg); err == nil {
+		t.Fatalf("expected error for negative https priority")
+	}
+
+	// On: each param must be a key/value pair Technitium would accept.
+	cfg = validConfigForTest()
+	cfg.HTTPSEnabled = true
+	cfg.HTTPSParams = []svcparam.Param{{Key: "port", Value: "abc"}}
+	if err := Validate(cfg); err == nil {
+		t.Fatalf("expected error for invalid port param")
+	}
+	cfg.HTTPSParams = []svcparam.Param{{Key: "alpn", Value: "a|b"}}
+	if err := Validate(cfg); err == nil {
+		t.Fatalf("expected error for '|' in a param value")
+	}
+
+	// On: the same key twice (case-insensitively) is rejected, because
+	// Technitium stores params as a dictionary.
+	cfg = validConfigForTest()
+	cfg.HTTPSEnabled = true
+	cfg.HTTPSParams = []svcparam.Param{{Key: "alpn", Value: "h2"}, {Key: "ALPN", Value: "h3"}}
+	if err := Validate(cfg); err == nil {
+		t.Fatalf("expected error for duplicate param key")
+	}
+
+	// On: a valid combination passes.
+	cfg = validConfigForTest()
+	cfg.HTTPSEnabled = true
+	cfg.HTTPSPriority = intPtr(5)
+	cfg.HTTPSTargetName = "app.example.com"
+	cfg.HTTPSParams = []svcparam.Param{
+		{Key: "alpn", Value: "h2,h3"},
+		{Key: "port", Value: "443"},
+		{Key: "65", Value: "010203"},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestStore_UpdatePersistsHTTPSFields checks the https settings survive a
+// save/reload round trip, including explicit off values for the automatic
+// hints (which must not be "helpfully" reset to the default on).
+func TestStore_UpdatePersistsHTTPSFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	store := NewStore(cfg, path)
+
+	if _, err := store.Update(func(c *Config) {
+		c.TechnitiumBaseURL = "http://technitium.example:5380"
+		c.Zone = "example.org"
+		c.LANIPv4 = "192.0.2.1"
+		c.HTTPSEnabled = true
+		c.HTTPSPriority = intPtr(5)
+		c.HTTPSTargetName = "app.example.com"
+		c.HTTPSParams = []svcparam.Param{
+			{Key: "alpn", Value: "h2,h3"},
+			{Key: "port", Value: "443"},
+		}
+		c.HTTPSAutoIPv4Hint = boolPtr(false)
+		c.HTTPSAutoIPv6Hint = boolPtr(false)
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reloaded.HTTPSEnabled || reloaded.HTTPSPriorityValue() != 5 || reloaded.HTTPSTargetName != "app.example.com" {
+		t.Fatalf("update was not persisted: %+v", reloaded)
+	}
+	if len(reloaded.HTTPSParams) != 2 || reloaded.HTTPSParams[0].Key != "alpn" || reloaded.HTTPSParams[0].Value != "h2,h3" {
+		t.Fatalf("params were not persisted: %+v", reloaded.HTTPSParams)
+	}
+	if reloaded.AutoIPv4HintEnabled() || reloaded.AutoIPv6HintEnabled() {
+		t.Fatalf("explicitly-off automatic hints must stay off across a reload")
 	}
 }

@@ -8,8 +8,10 @@
 // /api/zones/records/get's "response" object. This client assumes the
 // well-known Technitium shape (response.records[], each with name/type/ttl
 // and a type-specific rData object such as {"ipAddress":"..."} or
-// {"text":"..."}), which is what every Technitium release has shipped. It
-// has not been verified against a live server in this environment; tests
+// {"text":"..."}; HTTPS records additionally carry svcPriority,
+// svcTargetName, a svcParams key/value object and the autoIpv4Hint/
+// autoIpv6Hint flags), which is what every Technitium release has shipped.
+// It has not been verified against a live server in this environment; tests
 // here exercise this client against a fake server built to that same
 // assumed shape.
 package technitium
@@ -21,11 +23,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/reconciler"
+	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/svcparam"
 )
 
 const markerHeritage = "zoraxy-technitium-sync"
@@ -159,12 +163,43 @@ func (c *Client) deleteRecord(ctx context.Context, domain, recordType string, ex
 	return err
 }
 
+// svcTargetNameParam sends an SVCB target name the way Technitium expects:
+// Technitium trims trailing dots, so "." and "" both arrive as the empty
+// target (the zone root); sending "." for blank keeps the request shape
+// matching what Technitium's own web console sends.
+func svcTargetNameParam(target string) string {
+	if strings.TrimSpace(target) == "" {
+		return "."
+	}
+	return target
+}
+
+// svcParamsParam encodes a param list into Technitium's pipe-separated
+// svcParams form, or the literal "false" when there are none (how Technitium
+// spells an empty parameter list).
+func svcParamsParam(params []svcparam.Param) string {
+	if encoded, ok := svcparam.EncodeParams(params); ok {
+		return encoded
+	}
+	return "false"
+}
+
+func boolParam(b bool) string {
+	return strconv.FormatBool(b)
+}
+
+// updateSvcbHintsParam asks Technitium to refresh the Automatic Hints of any
+// SVCB/HTTPS record in the zone whose target name matches the A/AAAA record
+// being mutated - without it, automatic hints would go stale whenever the
+// LAN targets change.
+const updateSvcbHintsParam = "true"
+
 func (c *Client) addA(ctx context.Context, hostname, ip string) error {
-	return c.addRecord(ctx, hostname, "A", map[string]string{"ipAddress": ip})
+	return c.addRecord(ctx, hostname, "A", map[string]string{"ipAddress": ip, "updateSvcbHints": updateSvcbHintsParam})
 }
 
 func (c *Client) addAAAA(ctx context.Context, hostname, ip string) error {
-	return c.addRecord(ctx, hostname, "AAAA", map[string]string{"ipAddress": ip})
+	return c.addRecord(ctx, hostname, "AAAA", map[string]string{"ipAddress": ip, "updateSvcbHints": updateSvcbHintsParam})
 }
 
 func (c *Client) addTXT(ctx context.Context, domain, text string) error {
@@ -172,23 +207,58 @@ func (c *Client) addTXT(ctx context.Context, domain, text string) error {
 }
 
 func (c *Client) updateA(ctx context.Context, hostname, oldIP, newIP string) error {
-	return c.updateRecord(ctx, hostname, "A", map[string]string{"ipAddress": oldIP, "newIpAddress": newIP})
+	return c.updateRecord(ctx, hostname, "A", map[string]string{"ipAddress": oldIP, "newIpAddress": newIP, "updateSvcbHints": updateSvcbHintsParam})
 }
 
 func (c *Client) updateAAAA(ctx context.Context, hostname, oldIP, newIP string) error {
-	return c.updateRecord(ctx, hostname, "AAAA", map[string]string{"ipAddress": oldIP, "newIpAddress": newIP})
+	return c.updateRecord(ctx, hostname, "AAAA", map[string]string{"ipAddress": oldIP, "newIpAddress": newIP, "updateSvcbHints": updateSvcbHintsParam})
 }
 
 func (c *Client) deleteA(ctx context.Context, hostname, ip string) error {
-	return c.deleteRecord(ctx, hostname, "A", map[string]string{"ipAddress": ip})
+	return c.deleteRecord(ctx, hostname, "A", map[string]string{"ipAddress": ip, "updateSvcbHints": updateSvcbHintsParam})
 }
 
 func (c *Client) deleteAAAA(ctx context.Context, hostname, ip string) error {
-	return c.deleteRecord(ctx, hostname, "AAAA", map[string]string{"ipAddress": ip})
+	return c.deleteRecord(ctx, hostname, "AAAA", map[string]string{"ipAddress": ip, "updateSvcbHints": updateSvcbHintsParam})
 }
 
 func (c *Client) deleteTXT(ctx context.Context, domain, text string) error {
 	return c.deleteRecord(ctx, domain, "TXT", map[string]string{"text": text})
+}
+
+func (c *Client) addHTTPS(ctx context.Context, hostname string, spec reconciler.HTTPSSpec) error {
+	return c.addRecord(ctx, hostname, "HTTPS", map[string]string{
+		"svcPriority":   strconv.Itoa(spec.Priority),
+		"svcTargetName": svcTargetNameParam(spec.TargetName),
+		"svcParams":     svcParamsParam(spec.Params),
+		"autoIpv4Hint":  boolParam(spec.AutoIPv4Hint),
+		"autoIpv6Hint":  boolParam(spec.AutoIPv6Hint),
+	})
+}
+
+func (c *Client) updateHTTPS(ctx context.Context, hostname string, current, desired reconciler.HTTPSSpec) error {
+	return c.updateRecord(ctx, hostname, "HTTPS", map[string]string{
+		// Technitium identifies the record being rewritten by its current
+		// priority, target name and params; those must round-trip verbatim.
+		"svcPriority":      strconv.Itoa(current.Priority),
+		"svcTargetName":    svcTargetNameParam(current.TargetName),
+		"svcParams":        svcParamsParam(current.Params),
+		"newSvcPriority":   strconv.Itoa(desired.Priority),
+		"newSvcTargetName": svcTargetNameParam(desired.TargetName),
+		"newSvcParams":     svcParamsParam(desired.Params),
+		// The auto flags apply to the new record; sending false explicitly
+		// clears a previously-enabled Automatic Hints flag.
+		"autoIpv4Hint": boolParam(desired.AutoIPv4Hint),
+		"autoIpv6Hint": boolParam(desired.AutoIPv6Hint),
+	})
+}
+
+func (c *Client) deleteHTTPS(ctx context.Context, hostname string, current reconciler.HTTPSSpec) error {
+	return c.deleteRecord(ctx, hostname, "HTTPS", map[string]string{
+		"svcPriority":   strconv.Itoa(current.Priority),
+		"svcTargetName": svcTargetNameParam(current.TargetName),
+		"svcParams":     svcParamsParam(current.Params),
+	})
 }
 
 // checkOwnership queries only the ownership marker's own domain (a cheap,
@@ -217,9 +287,10 @@ func (c *Client) checkOwnership(ctx context.Context, hostname string) (bool, err
 
 // CreateHost adds the ownership marker (a benign no-op if it already exists
 // with our own value) and the A record, plus an AAAA record if ipv6 is
-// non-empty. It is used both for genuinely new hostnames and for the
+// non-empty and an HTTPS record if https is non-empty (at most one is
+// supported). It is used both for genuinely new hostnames and for the
 // edge case where we already own the marker but the A record is missing.
-func (c *Client) CreateHost(ctx context.Context, hostname, ipv4, ipv6 string) error {
+func (c *Client) CreateHost(ctx context.Context, hostname, ipv4, ipv6 string, https []reconciler.HTTPSSpec) error {
 	if err := c.addTXT(ctx, markerDomain(hostname), c.markerValue()); err != nil {
 		return fmt.Errorf("creating ownership marker for %s: %w", hostname, err)
 	}
@@ -231,7 +302,50 @@ func (c *Client) CreateHost(ctx context.Context, hostname, ipv4, ipv6 string) er
 			return fmt.Errorf("creating AAAA record for %s: %w", hostname, err)
 		}
 	}
+	if len(https) > 0 {
+		if err := c.addHTTPS(ctx, hostname, https[0]); err != nil {
+			return fmt.Errorf("creating HTTPS record for %s: %w", hostname, err)
+		}
+	}
 	return nil
+}
+
+// CreateHTTPS adds the desired HTTPS record for a hostname whose ownership
+// marker already exists (as CreateHost establishes first).
+func (c *Client) CreateHTTPS(ctx context.Context, hostname string, spec reconciler.HTTPSSpec) error {
+	owned, err := c.checkOwnership(ctx, hostname)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return ErrNotOwned
+	}
+	return c.addHTTPS(ctx, hostname, spec)
+}
+
+// UpdateHTTPS re-verifies ownership immediately before updating, independent
+// of whatever ownership state the caller's zone snapshot said earlier in the
+// cycle.
+func (c *Client) UpdateHTTPS(ctx context.Context, hostname string, current, desired reconciler.HTTPSSpec) error {
+	owned, err := c.checkOwnership(ctx, hostname)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return ErrNotOwned
+	}
+	return c.updateHTTPS(ctx, hostname, current, desired)
+}
+
+func (c *Client) DeleteHTTPSOnly(ctx context.Context, hostname string, current reconciler.HTTPSSpec) error {
+	owned, err := c.checkOwnership(ctx, hostname)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return ErrNotOwned
+	}
+	return c.deleteHTTPS(ctx, hostname, current)
 }
 
 // UpdateA re-verifies ownership immediately before updating, independent of
@@ -281,16 +395,25 @@ func (c *Client) DeleteAAAAOnly(ctx context.Context, hostname, ip string) error 
 	return c.deleteAAAA(ctx, hostname, ip)
 }
 
-// DeleteHost removes the A record, the AAAA record (if ip6 is non-empty) and
-// finally the ownership marker itself, but only after confirming this
-// instance owns the marker.
-func (c *Client) DeleteHost(ctx context.Context, hostname, ip4, ip6 string) error {
+// DeleteHost removes the first HTTPS record (if https is non-empty), the A
+// record, the AAAA record (if ip6 is non-empty) and finally the ownership marker
+// itself, but only after confirming this instance owns the marker. Like the
+// A/AAAA handling, extra HTTPS records beyond the first are left untouched.
+func (c *Client) DeleteHost(ctx context.Context, hostname, ip4, ip6 string, https []reconciler.HTTPSSpec) error {
 	owned, err := c.checkOwnership(ctx, hostname)
 	if err != nil {
 		return err
 	}
 	if !owned {
 		return ErrNotOwned
+	}
+	// The HTTPS record goes first: deleting the A/AAAA records (sent with
+	// updateSvcbHints=true) would rewrite its hint params, and Technitium
+	// identifies the record to delete by its current params.
+	if len(https) > 0 {
+		if err := c.deleteHTTPS(ctx, hostname, https[0]); err != nil {
+			return fmt.Errorf("deleting HTTPS record for %s: %w", hostname, err)
+		}
 	}
 	if ip4 != "" {
 		if err := c.deleteA(ctx, hostname, ip4); err != nil {
@@ -313,6 +436,13 @@ type parsedRecord struct {
 	Type string
 	IP   string
 	Text string
+
+	// HTTPS-only fields, set when Type is "HTTPS".
+	Priority     int
+	TargetName   string
+	Params       []svcparam.Param
+	AutoIPv4Hint bool
+	AutoIPv6Hint bool
 }
 
 type rawRecordsResponse struct {
@@ -331,6 +461,31 @@ type rawRDataAddress struct {
 
 type rawRDataText struct {
 	Text string `json:"text"`
+}
+
+// rawRDataHTTPS mirrors Technitium's rData object for SVCB/HTTPS records:
+// svcPriority and svcTargetName, a svcParams object whose keys are the
+// lowercase-dashed RFC key names (or decimal key codes for unknown keys) and
+// whose values are the param values as strings, plus the Automatic Hints
+// flags (always present on an authoritative zone listing).
+type rawRDataHTTPS struct {
+	SVCPriority   int               `json:"svcPriority"`
+	SVCTargetName string            `json:"svcTargetName"`
+	SVCParams     map[string]string `json:"svcParams"`
+	AutoIpv4Hint  bool              `json:"autoIpv4Hint"`
+	AutoIpv6Hint  bool              `json:"autoIpv6Hint"`
+}
+
+// lessParamKey orders param keys deterministically (canonical key first,
+// raw lowercased spelling as a fallback) so params parsed from a map come
+// back in a stable order.
+func lessParamKey(a, b string) bool {
+	ka, okA := svcparam.NormalizeKey(a)
+	kb, okB := svcparam.NormalizeKey(b)
+	if okA && okB {
+		return ka < kb
+	}
+	return strings.ToLower(a) < strings.ToLower(b)
 }
 
 func parseRecords(raw json.RawMessage) ([]parsedRecord, error) {
@@ -357,6 +512,23 @@ func parseRecords(raw json.RawMessage) ([]parsedRecord, error) {
 				json.Unmarshal(r.RData, &txt)
 			}
 			pr.Text = txt.Text
+		case "HTTPS":
+			var svcb rawRDataHTTPS
+			if len(r.RData) > 0 {
+				json.Unmarshal(r.RData, &svcb)
+			}
+			pr.Priority = svcb.SVCPriority
+			pr.TargetName = svcb.SVCTargetName
+			pr.AutoIPv4Hint = svcb.AutoIpv4Hint
+			pr.AutoIPv6Hint = svcb.AutoIpv6Hint
+			keys := make([]string, 0, len(svcb.SVCParams))
+			for k := range svcb.SVCParams {
+				keys = append(keys, k)
+			}
+			sort.Slice(keys, func(i, j int) bool { return lessParamKey(keys[i], keys[j]) })
+			for _, k := range keys {
+				pr.Params = append(pr.Params, svcparam.Param{Key: k, Value: svcb.SVCParams[k]})
+			}
 		}
 		out = append(out, pr)
 	}
@@ -366,7 +538,7 @@ func parseRecords(raw json.RawMessage) ([]parsedRecord, error) {
 // GetZoneState implements reconciler.DNSStore: it dumps the entire zone in
 // one call (also how ownership is recovered after a restart - there is no
 // separate in-memory "known hosts" state, this is always re-derived live)
-// and groups A/AAAA/marker-TXT records by hostname.
+// and groups A/AAAA/HTTPS/marker-TXT records by hostname.
 func (c *Client) GetZoneState(ctx context.Context) (reconciler.ZoneState, error) {
 	v := url.Values{}
 	v.Set("zone", c.Zone)
@@ -401,6 +573,16 @@ func (c *Client) GetZoneState(ctx context.Context) (reconciler.ZoneState, error)
 		case "AAAA":
 			hr := hosts[name]
 			hr.AAAAIPs = append(hr.AAAAIPs, r.IP)
+			hosts[name] = hr
+		case "HTTPS":
+			hr := hosts[name]
+			hr.HTTPSSpecs = append(hr.HTTPSSpecs, reconciler.HTTPSSpec{
+				Priority:     r.Priority,
+				TargetName:   r.TargetName,
+				Params:       r.Params,
+				AutoIPv4Hint: r.AutoIPv4Hint,
+				AutoIPv6Hint: r.AutoIPv6Hint,
+			})
 			hosts[name] = hr
 		case "TXT":
 			if hostname, ok := hostnameFromMarkerDomain(name); ok {

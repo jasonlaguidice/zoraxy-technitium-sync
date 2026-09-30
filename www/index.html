@@ -105,7 +105,7 @@
 </head>
 <body>
   <h1>Technitium Sync</h1>
-  <p class="sub">Keeps Technitium A/AAAA records in sync with Zoraxy's HTTP proxy host rules.</p>
+  <p class="sub">Keeps Technitium A/AAAA/HTTPS records in sync with Zoraxy's HTTP proxy host rules.</p>
 
   <section>
     <h2>Status</h2>
@@ -166,6 +166,30 @@
         <input type="text" id="lan_ipv6">
       </div>
 
+      <div class="checkbox-row">
+        <input type="checkbox" id="https_enabled">
+        <label for="https_enabled" style="margin:0;">Also create HTTPS records (global toggle)</label>
+      </div>
+      <div>
+        <label>HTTPS priority <span class="hint">0 = alias mode (params and hints have no effect); 1 or higher = service mode</span></label>
+        <input type="number" id="https_priority" min="0" max="65535" placeholder="1">
+      </div>
+      <div>
+        <label>HTTPS target name</label>
+        <input type="text" id="https_target_name" placeholder=".">
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" id="https_auto_ipv4_hint">
+        <label for="https_auto_ipv4_hint" style="margin:0;">Use automatic IPv4 hint</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" id="https_auto_ipv6_hint">
+        <label for="https_auto_ipv6_hint" style="margin:0;">Use automatic IPv6 hint</label>
+      </div>
+      <label>HTTPS params</label>
+      <div id="httpsParams"></div>
+      <button type="button" id="httpsAddParamBtn">Add param</button>
+
       <label>Instance ID <span class="hint">generated once, used in the ownership TXT marker</span></label>
       <input type="text" id="instance_id" class="readonly" readonly>
 
@@ -193,6 +217,123 @@
     return d.toLocaleString();
   }
 
+  // ---- HTTPS params table -------------------------------------------------
+  // The params list mirrors Technitium's own HTTPS record editor: each row
+  // has a key dropdown (the RFC key names, or "Unknown", which turns the key
+  // cell into a "key number" text field expecting the raw numeric SVC param
+  // key code and a hex-string value) and a value field, plus a remove
+  // button. State lives in the httpsParams array; the DOM is re-rendered
+  // from it on structural changes only.
+  var HTTPS_PARAM_KEYS = ['mandatory', 'alpn', 'no-default-alpn', 'port', 'ipv4hint', 'ipv6hint', 'dohpath'];
+  var httpsParams = [];
+  var httpsParamContainer = document.getElementById('httpsParams');
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function httpsPriorityValue() {
+    var n = parseInt(document.getElementById('https_priority').value, 10);
+    return isNaN(n) ? 1 : n;
+  }
+
+  function isNumericParamKey(key) {
+    return /^\d+$/.test((key || '').trim());
+  }
+
+  function renderParamRows() {
+    var html = '';
+    for (var i = 0; i < httpsParams.length; i++) {
+      html += renderParamRow(httpsParams[i], i);
+    }
+    httpsParamContainer.innerHTML = html;
+    attachParamListeners();
+  }
+
+  function renderParamRow(row, idx) {
+    var unknown = !!row.unknown || isNumericParamKey(row.key);
+    var keyCell;
+    if (unknown) {
+      // Once "Unknown" is chosen (or the key is numeric), the key cell
+      // becomes a free-text "key number" field, like Technitium's editor.
+      keyCell = '<input type="text" data-param-idx="' + idx + '" data-param-role="key" placeholder="key number" value="' + esc(row.key) + '">';
+    } else {
+      var options = '';
+      for (var k = 0; k < HTTPS_PARAM_KEYS.length; k++) {
+        options += '<option' + (row.key === HTTPS_PARAM_KEYS[k] ? ' selected' : '') + '>' + HTTPS_PARAM_KEYS[k] + '</option>';
+      }
+      options += '<option>Unknown</option>';
+      keyCell = '<select data-param-idx="' + idx + '" data-param-role="key">' + options + '</select>';
+    }
+    var valuePlaceholder = unknown ? 'hex string' : 'value';
+    return '<div class="row">' +
+      '<label style="margin:0;font-size:12px;">Key</label>' + keyCell +
+      '<label style="margin:0;font-size:12px;">Value</label>' +
+      '<input type="text" data-param-idx="' + idx + '" data-param-role="value" placeholder="' + valuePlaceholder + '" value="' + esc(row.value) + '">' +
+      '<button type="button" data-param-idx="' + idx + '" data-param-role="remove">Remove</button>' +
+      '</div>';
+  }
+
+  function attachParamListeners() {
+    var els = httpsParamContainer.querySelectorAll('input,select,button');
+    for (var i = 0; i < els.length; i++) {
+      attachParamListener(els[i]);
+    }
+  }
+
+  function attachParamListener(el) {
+    var idxAttr = el.getAttribute('data-param-idx');
+    var role = el.getAttribute('data-param-role');
+    if (idxAttr === null || role === null) return;
+    var idx = parseInt(idxAttr, 10);
+    var row = httpsParams[idx];
+    if (!row) return;
+
+    if (role === 'key') {
+      if (el.tagName === 'SELECT') {
+        el.addEventListener('change', function () {
+          var v = el.value || '';
+          if (v === 'Unknown') {
+            row.unknown = true;
+            row.key = '';
+          } else {
+            row.unknown = false;
+            row.key = v;
+          }
+          renderParamRows();
+        });
+      } else {
+        el.addEventListener('change', function () {
+          // Typing a key number here; update state in place (no re-render:
+          // the input already shows what was typed, and re-rendering would
+          // drop the browser's edit focus mid-field).
+          row.key = el.value.trim();
+          row.unknown = !!row.unknown;
+        });
+      }
+    } else if (role === 'value') {
+      el.addEventListener('change', function () {
+        row.value = el.value;
+      });
+    } else if (role === 'remove') {
+      el.addEventListener('click', function () {
+        httpsParams.splice(idx, 1);
+        renderParamRows();
+      });
+    }
+  }
+
+  document.getElementById('httpsAddParamBtn').addEventListener('click', function () {
+    // Start on the first dropdown entry so the row's state matches what the
+    // select displays (an empty key would be dropped on save).
+    httpsParams.push({ key: HTTPS_PARAM_KEYS[0], value: '' });
+    renderParamRows();
+  });
+
+  // ---- config load / save -------------------------------------------------
+
   function loadConfig() {
     fetch(apiURL('/api/config')).then(function (r) { return r.json(); }).then(function (cfg) {
       document.getElementById('technitium_base_url').value = cfg.technitium_base_url || '';
@@ -212,6 +353,23 @@
       document.getElementById('aaaa_enabled').checked = !!cfg.aaaa_enabled;
       document.getElementById('lan_ipv6').value = cfg.lan_ipv6 || '';
       document.getElementById('instance_id').value = cfg.instance_id || '';
+
+      document.getElementById('https_enabled').checked = !!cfg.https_enabled;
+      // Priority and target name show their defaults (1 and ".") only as
+      // grey placeholders, so a value equal to the default loads as an empty
+      // field. 0 is a real, non-default value (alias mode) and is shown.
+      var priorityVal = cfg.https_priority;
+      document.getElementById('https_priority').value =
+        (priorityVal === undefined || priorityVal === null || priorityVal === 1) ? '' : String(priorityVal);
+      var targetVal = (cfg.https_target_name || '').trim();
+      document.getElementById('https_target_name').value = (targetVal === '.') ? '' : targetVal;
+      document.getElementById('https_auto_ipv4_hint').checked = cfg.https_auto_ipv4_hint !== false;
+      document.getElementById('https_auto_ipv6_hint').checked = cfg.https_auto_ipv6_hint !== false;
+
+      httpsParams = (cfg.https_params || []).map(function (p) {
+        return { key: p.key || '', value: p.value || '' };
+      });
+      renderParamRows();
     }).catch(function (err) {
       document.getElementById('saveMsg').textContent = 'Failed to load config: ' + err;
     });
@@ -267,7 +425,21 @@
       poll_interval_seconds: parseInt(document.getElementById('poll_interval_seconds').value, 10),
       lan_ipv4: document.getElementById('lan_ipv4').value.trim(),
       aaaa_enabled: document.getElementById('aaaa_enabled').checked,
-      lan_ipv6: document.getElementById('lan_ipv6').value.trim()
+      lan_ipv6: document.getElementById('lan_ipv6').value.trim(),
+
+      https_enabled: document.getElementById('https_enabled').checked,
+      // 0 (alias mode) is a legitimate value, so only a blank/unparsable
+      // input falls back to the default of 1. A blank target name is sent
+      // as-is; the server treats it the same as ".".
+      https_priority: httpsPriorityValue(),
+      https_target_name: document.getElementById('https_target_name').value.trim(),
+      // Rows whose key was never filled in are dropped; every kept row is
+      // validated server-side (key spelling, value shape, duplicates).
+      https_params: httpsParams
+        .filter(function (r) { return (r.key || '').trim() !== ''; })
+        .map(function (r) { return { key: r.key.trim(), value: r.value || '' }; }),
+      https_auto_ipv4_hint: document.getElementById('https_auto_ipv4_hint').checked,
+      https_auto_ipv6_hint: document.getElementById('https_auto_ipv6_hint').checked
     };
 
     fetch(apiURL('/api/config'), {

@@ -6,7 +6,7 @@
       "name": "Technitium Sync",
       "author": "jasonlaguidice",
       "author_contact": "https://matrix.to/#/@jason:shadowdrake.org",
-      "description": "Keeps Technitium DNS A/AAAA records in sync with Zoraxy's HTTP proxy host rules",
+      "description": "Keeps Technitium DNS A/AAAA/HTTPS records in sync with Zoraxy's HTTP proxy host rules",
       "url": "https://github.com/jasonlaguidice/zoraxy-technitium-sync",
       "type": 1,
       "version_major": 1,

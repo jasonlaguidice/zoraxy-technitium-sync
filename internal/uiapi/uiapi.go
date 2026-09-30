@@ -11,6 +11,7 @@ import (
 
 	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/config"
 	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/status"
+	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/svcparam"
 )
 
 // Server wires the config and status stores to HTTP handlers.
@@ -45,6 +46,13 @@ type configReadPayload struct {
 	AAAAEnabled         bool   `json:"aaaa_enabled"`
 	LANIPv6             string `json:"lan_ipv6"`
 	InstanceID          string `json:"instance_id"`
+
+	HTTPSEnabled      bool             `json:"https_enabled"`
+	HTTPSPriority     int              `json:"https_priority"`
+	HTTPSTargetName   string           `json:"https_target_name"`
+	HTTPSParams       []svcparam.Param `json:"https_params"`
+	HTTPSAutoIPv4Hint bool             `json:"https_auto_ipv4_hint"`
+	HTTPSAutoIPv6Hint bool             `json:"https_auto_ipv6_hint"`
 }
 
 // configWritePayload is what POST /api/config accepts. TechnitiumToken is
@@ -60,6 +68,13 @@ type configWritePayload struct {
 	LANIPv4             string `json:"lan_ipv4"`
 	AAAAEnabled         bool   `json:"aaaa_enabled"`
 	LANIPv6             string `json:"lan_ipv6"`
+
+	HTTPSEnabled      bool             `json:"https_enabled"`
+	HTTPSPriority     *int             `json:"https_priority"`
+	HTTPSTargetName   string           `json:"https_target_name"`
+	HTTPSParams       []svcparam.Param `json:"https_params"`
+	HTTPSAutoIPv4Hint *bool            `json:"https_auto_ipv4_hint"`
+	HTTPSAutoIPv6Hint *bool            `json:"https_auto_ipv6_hint"`
 }
 
 func toReadPayload(c config.Config) configReadPayload {
@@ -73,6 +88,13 @@ func toReadPayload(c config.Config) configReadPayload {
 		AAAAEnabled:         c.AAAAEnabled,
 		LANIPv6:             c.LANIPv6,
 		InstanceID:          c.InstanceID,
+
+		HTTPSEnabled:      c.HTTPSEnabled,
+		HTTPSPriority:     c.HTTPSPriorityValue(),
+		HTTPSTargetName:   c.HTTPSTargetName,
+		HTTPSParams:       c.HTTPSParams,
+		HTTPSAutoIPv4Hint: c.AutoIPv4HintEnabled(),
+		HTTPSAutoIPv6Hint: c.AutoIPv6HintEnabled(),
 	}
 }
 
@@ -123,6 +145,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			c.LANIPv4 = payload.LANIPv4
 			c.AAAAEnabled = payload.AAAAEnabled
 			c.LANIPv6 = payload.LANIPv6
+			c.HTTPSEnabled = payload.HTTPSEnabled
+			c.HTTPSPriority = payload.HTTPSPriority
+			c.HTTPSTargetName = payload.HTTPSTargetName
+			c.HTTPSParams = payload.HTTPSParams
+			c.HTTPSAutoIPv4Hint = payload.HTTPSAutoIPv4Hint
+			c.HTTPSAutoIPv6Hint = payload.HTTPSAutoIPv6Hint
 			// InstanceID is never accepted from the client.
 		})
 		if err != nil {

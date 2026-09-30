@@ -43,7 +43,7 @@ func main() {
 		Name:          "Technitium Sync",
 		Author:        "jasonlaguidice",
 		AuthorContact: "https://matrix.to/#/@jason:shadowdrake.org",
-		Description:   "Keeps Technitium DNS A/AAAA records in sync with Zoraxy's HTTP proxy host rules",
+		Description:   "Keeps Technitium DNS A/AAAA/HTTPS records in sync with Zoraxy's HTTP proxy host rules",
 		URL:           "https://github.com/jasonlaguidice/zoraxy-technitium-sync",
 		Type:          plugin.PluginType_Utilities,
 		VersionMajor:  versionMajor,
@@ -118,6 +118,15 @@ func reconcilerOptions(c *config.Config) reconciler.Options {
 		IPv4Target:  c.LANIPv4,
 		AAAAEnabled: c.AAAAEnabled,
 		IPv6Target:  c.LANIPv6,
+
+		HTTPSEnabled: c.HTTPSEnabled,
+		HTTPS: reconciler.HTTPSSpec{
+			Priority:     c.HTTPSPriorityValue(),
+			TargetName:   c.HTTPSTargetName,
+			Params:       c.HTTPSParams,
+			AutoIPv4Hint: c.AutoIPv4HintEnabled(),
+			AutoIPv6Hint: c.AutoIPv6HintEnabled(),
+		},
 	}
 }
 

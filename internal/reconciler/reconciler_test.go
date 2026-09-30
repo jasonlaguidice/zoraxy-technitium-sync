@@ -3,6 +3,8 @@ package reconciler
 import (
 	"context"
 	"testing"
+
+	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/svcparam"
 )
 
 type fakeHostLister struct {
@@ -18,6 +20,8 @@ type call struct {
 	op       string
 	hostname string
 	a, b     string
+	https    []HTTPSSpec
+	spec     HTTPSSpec
 }
 
 type fakeStore struct {
@@ -41,12 +45,13 @@ func (f *fakeStore) GetZoneState(ctx context.Context) (ZoneState, error) {
 	return ZoneState{Hosts: cp}, nil
 }
 
-func (f *fakeStore) CreateHost(ctx context.Context, hostname, ipv4, ipv6 string) error {
-	f.calls = append(f.calls, call{op: "create", hostname: hostname, a: ipv4, b: ipv6})
+func (f *fakeStore) CreateHost(ctx context.Context, hostname, ipv4, ipv6 string, https []HTTPSSpec) error {
+	f.calls = append(f.calls, call{op: "create", hostname: hostname, a: ipv4, b: ipv6, https: https})
 	hr := HostRecords{AIPs: []string{ipv4}, OwnedByUs: true}
 	if ipv6 != "" {
 		hr.AAAAIPs = []string{ipv6}
 	}
+	hr.HTTPSSpecs = https
 	f.hosts[hostname] = hr
 	return nil
 }
@@ -83,8 +88,34 @@ func (f *fakeStore) DeleteAAAAOnly(ctx context.Context, hostname, ip string) err
 	return nil
 }
 
-func (f *fakeStore) DeleteHost(ctx context.Context, hostname, ip4, ip6 string) error {
-	f.calls = append(f.calls, call{op: "delete", hostname: hostname, a: ip4, b: ip6})
+func (f *fakeStore) CreateHTTPS(ctx context.Context, hostname string, spec HTTPSSpec) error {
+	f.calls = append(f.calls, call{op: "createHTTPS", hostname: hostname, spec: spec})
+	hr := f.hosts[hostname]
+	hr.HTTPSSpecs = append(hr.HTTPSSpecs, spec)
+	f.hosts[hostname] = hr
+	return nil
+}
+
+func (f *fakeStore) UpdateHTTPS(ctx context.Context, hostname string, current, desired HTTPSSpec) error {
+	f.calls = append(f.calls, call{op: "updateHTTPS", hostname: hostname, spec: desired})
+	hr := f.hosts[hostname]
+	if len(hr.HTTPSSpecs) > 0 {
+		hr.HTTPSSpecs[0] = desired
+	}
+	f.hosts[hostname] = hr
+	return nil
+}
+
+func (f *fakeStore) DeleteHTTPSOnly(ctx context.Context, hostname string, current HTTPSSpec) error {
+	f.calls = append(f.calls, call{op: "deleteHTTPSOnly", hostname: hostname, spec: current})
+	hr := f.hosts[hostname]
+	hr.HTTPSSpecs = nil
+	f.hosts[hostname] = hr
+	return nil
+}
+
+func (f *fakeStore) DeleteHost(ctx context.Context, hostname, ip4, ip6 string, https []HTTPSSpec) error {
+	f.calls = append(f.calls, call{op: "delete", hostname: hostname, a: ip4, b: ip6, https: https})
 	delete(f.hosts, hostname)
 	return nil
 }
@@ -418,5 +449,409 @@ func TestReconcile_ErrorListingHostsIsSurfaced(t *testing.T) {
 
 	if _, err := r.Reconcile(context.Background()); err == nil {
 		t.Fatalf("expected error to be surfaced")
+	}
+}
+
+// httpsOpts is the HTTPS-enabled options block the HTTPS tests share.
+func httpsOpts() Options {
+	return Options{
+		IPv4Target:   "192.168.1.24",
+		HTTPSEnabled: true,
+		HTTPS: HTTPSSpec{
+			Priority:     5,
+			TargetName:   ".",
+			Params:       []svcparam.Param{{Key: "alpn", Value: "h2,h3"}},
+			AutoIPv4Hint: true,
+			AutoIPv6Hint: true,
+		},
+	}
+}
+
+func TestReconcile_HTTPSCreatedWithNewHost(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"new.example.com"}}
+	store := newFakeStore()
+	r := New(hosts, store, httpsOpts())
+
+	res, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Created) != 1 || res.Created[0] != "new.example.com" {
+		t.Fatalf("expected new.example.com to be created, got %+v", res)
+	}
+	calls := store.calls
+	if len(calls) != 1 || calls[0].op != "create" {
+		t.Fatalf("expected a single bundled create call, got %+v", calls)
+	}
+	if len(calls[0].https) != 1 || calls[0].https[0].Priority != 5 {
+		t.Fatalf("expected the create call to carry the HTTPS spec, got %+v", calls[0])
+	}
+	if len(store.hosts["new.example.com"].HTTPSSpecs) != 1 {
+		t.Fatalf("expected HTTPS record in the fake zone, got %+v", store.hosts["new.example.com"])
+	}
+}
+
+func TestReconcile_HTTPSCreatedForExistingHost(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{AIPs: []string{"192.168.1.24"}, OwnedByUs: true}
+	r := New(hosts, store, httpsOpts())
+
+	res, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasCall(store.calls, "createHTTPS", "a.example.com") {
+		t.Fatalf("expected HTTPS to be created for a.example.com, got %+v", store.calls)
+	}
+	if len(res.Updated) != 1 || res.Updated[0] != "a.example.com" {
+		t.Fatalf("expected host reported as updated, got %+v", res.Updated)
+	}
+}
+
+func TestReconcile_HTTPSUpdatedWhenSpecDiffers(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		AIPs:       []string{"192.168.1.24"},
+		HTTPSSpecs: []HTTPSSpec{{Priority: 0, TargetName: ".", Params: []svcparam.Param{{Key: "alpn", Value: "h2,h3"}}, AutoIPv4Hint: true, AutoIPv6Hint: true}},
+		OwnedByUs:  true,
+	}
+	r := New(hosts, store, httpsOpts())
+
+	res, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasCall(store.calls, "updateHTTPS", "a.example.com") {
+		t.Fatalf("expected HTTPS to be updated (priority 0 -> 5), got %+v", store.calls)
+	}
+	if len(res.Updated) != 1 || res.Updated[0] != "a.example.com" {
+		t.Fatalf("expected host reported as updated, got %+v", res.Updated)
+	}
+	if store.hosts["a.example.com"].HTTPSSpecs[0].Priority != 5 {
+		t.Fatalf("expected in-place update to priority 5, got %+v", store.hosts["a.example.com"].HTTPSSpecs[0])
+	}
+}
+
+func TestReconcile_HTTPSUntouchedWhenMatching(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		AIPs:       []string{"192.168.1.24"},
+		HTTPSSpecs: []HTTPSSpec{httpsOpts().HTTPS},
+		OwnedByUs:  true,
+	}
+	r := New(hosts, store, httpsOpts())
+
+	res, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasCall(store.calls, "updateHTTPS", "a.example.com") || hasCall(store.calls, "createHTTPS", "a.example.com") {
+		t.Fatalf("expected no HTTPS mutation when the record already matches, got %+v", store.calls)
+	}
+	if len(res.Updated) != 0 {
+		t.Fatalf("expected no updates, got %+v", res.Updated)
+	}
+}
+
+func TestReconcile_HTTPSDisabledRemovesExisting(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		AIPs:       []string{"192.168.1.24"},
+		HTTPSSpecs: []HTTPSSpec{{Priority: 5, TargetName: "."}},
+		OwnedByUs:  true,
+	}
+	r := New(hosts, store, Options{IPv4Target: "192.168.1.24"})
+
+	res, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasCall(store.calls, "deleteHTTPSOnly", "a.example.com") {
+		t.Fatalf("expected HTTPS to be removed for a.example.com, got %+v", store.calls)
+	}
+	if len(res.Updated) != 1 {
+		t.Fatalf("expected host reported as updated, got %+v", res.Updated)
+	}
+	if len(store.hosts["a.example.com"].AIPs) == 0 {
+		t.Fatalf("A record must survive an HTTPS-only removal")
+	}
+}
+
+func TestReconcile_SkipsForeignHTTPSOnlyRecord(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"foreign.example.com"}}
+	store := newFakeStore()
+	// No A record at all, only a foreign HTTPS record with no marker. This
+	// must not be treated as "nothing exists yet, safe to create" - it has to
+	// be skipped exactly like a foreign A record would be.
+	store.hosts["foreign.example.com"] = HostRecords{
+		HTTPSSpecs: []HTTPSSpec{{Priority: 1, TargetName: "."}},
+		OwnedByUs:  false,
+	}
+	r := New(hosts, store, httpsOpts())
+
+	res, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0] != "foreign.example.com" {
+		t.Fatalf("expected foreign.example.com to be skipped, got %+v", res)
+	}
+	if hasCall(store.calls, "create", "foreign.example.com") {
+		t.Fatalf("must never adopt a foreign HTTPS-only record by creating an A record and marker next to it: %+v", store.calls)
+	}
+	if len(store.hosts["foreign.example.com"].AIPs) != 0 {
+		t.Fatalf("must not have added an A record to a foreign host: %+v", store.hosts["foreign.example.com"])
+	}
+	if store.hosts["foreign.example.com"].HTTPSSpecs[0].Priority != 1 {
+		t.Fatalf("foreign HTTPS record was mutated: %+v", store.hosts["foreign.example.com"].HTTPSSpecs[0])
+	}
+}
+
+func TestReconcile_DeletesHTTPSOnHostRemoval(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"other.example.com"}}
+	store := newFakeStore()
+	store.hosts["gone.example.com"] = HostRecords{
+		AIPs:       []string{"192.168.1.24"},
+		HTTPSSpecs: []HTTPSSpec{{Priority: 5, TargetName: "."}},
+		OwnedByUs:  true,
+	}
+	r := New(hosts, store, httpsOpts())
+	r.lastGoodHostCount = 1 // breaker baseline; the removal drops to 1 too
+
+	res, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Deleted) != 1 || res.Deleted[0] != "gone.example.com" {
+		t.Fatalf("expected gone.example.com to be deleted, got %+v", res)
+	}
+	if !hasCall(store.calls, "delete", "gone.example.com") {
+		t.Fatalf("expected DeleteHost call, got %+v", store.calls)
+	}
+	for _, c := range store.calls {
+		if c.op == "delete" && c.hostname == "gone.example.com" && len(c.https) != 1 {
+			t.Fatalf("expected the delete call to carry the HTTPS spec for removal, got %+v", c)
+		}
+	}
+	if hasCall(store.calls, "deleteHTTPSOnly", "gone.example.com") {
+		t.Fatalf("expected the HTTPS removal to be bundled into DeleteHost, not a separate call: %+v", store.calls)
+	}
+}
+
+// TestReconcile_AutoHintParamNotComparedWhenAutoOn guards against a perpetual
+// update loop: with Automatic Hints on, Technitium overwrites the manual
+// ipv4hint value with whatever it resolves from the zone, so the stored
+// value must not be compared against the configured one - only the flag is
+// compared (the manual value is still sent, per the "send both" design).
+func TestReconcile_AutoHintParamNotComparedWhenAutoOn(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		AIPs: []string{"192.168.1.24"},
+		HTTPSSpecs: []HTTPSSpec{
+			{
+				Priority:     5,
+				TargetName:   ".",
+				Params:       []svcparam.Param{{Key: "ipv4hint", Value: "10.9.9.9"}, {Key: "alpn", Value: "h2,h3"}},
+				AutoIPv4Hint: true,
+				AutoIPv6Hint: true,
+			},
+		},
+		OwnedByUs: true,
+	}
+	// Desired carries a different manual ipv4hint value, but auto is on for
+	// both sides, so the value difference must not trigger an update.
+	opts := httpsOpts()
+	opts.HTTPS.Params = append(opts.HTTPS.Params, svcparam.Param{Key: "ipv4hint", Value: "1.2.3.4"})
+	r := New(hosts, store, opts)
+
+	res, err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasCall(store.calls, "updateHTTPS", "a.example.com") {
+		t.Fatalf("expected no update when only the auto-managed hint value differs: %+v", store.calls)
+	}
+	if len(res.Updated) != 0 {
+		t.Fatalf("expected no updates, got %+v", res.Updated)
+	}
+}
+
+// TestReconcile_AutoHintFlagMismatchTriggersUpdate verifies the flip side:
+// when the automatic-hint flags differ the record must be updated even if
+// everything else matches.
+func TestReconcile_AutoHintFlagMismatchTriggersUpdate(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		AIPs:       []string{"192.168.1.24"},
+		HTTPSSpecs: []HTTPSSpec{httpsOpts().HTTPS},
+		OwnedByUs:  true,
+	}
+	opts := httpsOpts()
+	opts.HTTPS.AutoIPv4Hint = false // flip just the flag
+	r := New(hosts, store, opts)
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasCall(store.calls, "updateHTTPS", "a.example.com") {
+		t.Fatalf("expected an update when the automatic-hint flag differs, got %+v", store.calls)
+	}
+}
+
+// TestReconcile_HTTPSSpellingAndOrderInsensitive checks that a stored record
+// whose params differ only in key spelling or list order compares equal to
+// the desired spec (no spurious rewrites), while a real value difference does
+// not.
+func TestReconcile_HTTPSSpellingAndOrderInsensitive(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		AIPs: []string{"192.168.1.24"},
+		HTTPSSpecs: []HTTPSSpec{
+			{
+				Priority:     5,
+				TargetName:   ".",
+				Params:       []svcparam.Param{{Key: "ALPN", Value: "h2,h3"}, {Key: "no_default_alpn", Value: ""}},
+				AutoIPv4Hint: true,
+				AutoIPv6Hint: true,
+			},
+		},
+		OwnedByUs: true,
+	}
+	// Desired spells the keys differently but means the same record.
+	opts := httpsOpts()
+	opts.HTTPS.Params = []svcparam.Param{
+		{Key: "no-default-alpn", Value: ""},
+		{Key: "alpn", Value: "h2,h3"},
+	}
+	r := New(hosts, store, opts)
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasCall(store.calls, "updateHTTPS", "a.example.com") {
+		t.Fatalf("expected no update when only key spelling differs: %+v", store.calls)
+	}
+
+	// A genuine value difference must still be caught.
+	hosts2 := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store2 := newFakeStore()
+	store2.hosts["a.example.com"] = HostRecords{
+		AIPs: []string{"192.168.1.24"},
+		HTTPSSpecs: []HTTPSSpec{
+			{
+				Priority:     5,
+				TargetName:   ".",
+				Params:       []svcparam.Param{{Key: "alpn", Value: "h2,spooks/1.1"}}, // different ALPN set
+				AutoIPv4Hint: true,
+				AutoIPv6Hint: true,
+			},
+		},
+		OwnedByUs: true,
+	}
+	r2 := New(hosts2, store2, httpsOpts())
+	if _, err := r2.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasCall(store2.calls, "updateHTTPS", "a.example.com") {
+		t.Fatalf("expected an update when the param values genuinely differ, got %+v", store2.calls)
+	}
+}
+
+func callOps(calls []call) []string {
+	ops := make([]string, len(calls))
+	for i, c := range calls {
+		ops[i] = c.op
+	}
+	return ops
+}
+
+// TestReconcile_HTTPSUpdateRunsBeforeAMutation pins the ordering that keeps
+// Technitium's record lookup valid: A/AAAA mutations carry updateSvcbHints,
+// which rewrites the HTTPS record's hint params, so the HTTPS update (which
+// identifies the record by its current params) must go first.
+func TestReconcile_HTTPSUpdateRunsBeforeAMutation(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		AIPs:       []string{"10.0.0.9"},
+		HTTPSSpecs: []HTTPSSpec{{Priority: 0, TargetName: ".", AutoIPv4Hint: true, AutoIPv6Hint: true}},
+		OwnedByUs:  true,
+	}
+	r := New(hosts, store, httpsOpts())
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ops := callOps(store.calls)
+	if len(ops) != 2 || ops[0] != "updateHTTPS" || ops[1] != "updateA" {
+		t.Fatalf("expected updateHTTPS before updateA, got %v", ops)
+	}
+}
+
+// TestReconcile_HTTPSRemovalRunsBeforeAAAARemoval is the same ordering rule
+// for the toggle-off path.
+func TestReconcile_HTTPSRemovalRunsBeforeAAAARemoval(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		AIPs:       []string{"192.168.1.24"},
+		AAAAIPs:    []string{"2001:db8::1"},
+		HTTPSSpecs: []HTTPSSpec{{Priority: 5, TargetName: ".", AutoIPv4Hint: true, AutoIPv6Hint: true}},
+		OwnedByUs:  true,
+	}
+	r := New(hosts, store, Options{IPv4Target: "192.168.1.24"})
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ops := callOps(store.calls)
+	if len(ops) != 2 || ops[0] != "deleteHTTPSOnly" || ops[1] != "deleteAAAAOnly" {
+		t.Fatalf("expected deleteHTTPSOnly before deleteAAAAOnly, got %v", ops)
+	}
+}
+
+// TestReconcile_HTTPSCreateRunsAfterAMutation: a new HTTPS record is created
+// last so Technitium resolves its automatic hints from the current A record.
+func TestReconcile_HTTPSCreateRunsAfterAMutation(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{AIPs: []string{"10.0.0.9"}, OwnedByUs: true}
+	r := New(hosts, store, httpsOpts())
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ops := callOps(store.calls)
+	if len(ops) != 2 || ops[0] != "updateA" || ops[1] != "createHTTPS" {
+		t.Fatalf("expected updateA before createHTTPS, got %v", ops)
+	}
+}
+
+// TestReconcile_CreateHostSkipsHTTPSWhenOneExists covers the owned-marker,
+// missing-A edge case: an existing HTTPS record must not get a second,
+// differing one added next to it.
+func TestReconcile_CreateHostSkipsHTTPSWhenOneExists(t *testing.T) {
+	hosts := &fakeHostLister{hosts: []string{"a.example.com"}}
+	store := newFakeStore()
+	store.hosts["a.example.com"] = HostRecords{
+		HTTPSSpecs: []HTTPSSpec{{Priority: 9, TargetName: "."}},
+		OwnedByUs:  true,
+	}
+	r := New(hosts, store, httpsOpts())
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, c := range store.calls {
+		if c.op == "create" && len(c.https) != 0 {
+			t.Fatalf("expected CreateHost without an HTTPS spec, got %+v", c)
+		}
 	}
 }

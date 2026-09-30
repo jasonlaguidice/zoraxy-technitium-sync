@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/jasonlaguidice/zoraxy-technitium-sync/internal/svcparam"
 )
 
 const (
@@ -42,6 +44,52 @@ type Config struct {
 	// on first run and then persisted; it must stay stable across restarts or
 	// this instance will stop recognising records it created before.
 	InstanceID string `json:"instance_id"`
+
+	// HTTPS record settings. The HTTPS (RFC 9460) record is optional, like
+	// the AAAA record: HTTPSEnabled is a global toggle that, when on, makes
+	// every managed hostname also get one HTTPS record built from the fields
+	// below. Priority 0 means alias mode; anything above 0 is service mode
+	// (absent defaults to 1).
+	// TargetName is the record's target domain name; blank means "." (the
+	// zone root). Params are the service binding parameters, sent to
+	// Technitium verbatim as svcParams key/value pairs. The auto-hint flags
+	// mirror Technitium's "Automatic Hints" option: when on, Technitium
+	// resolves the ipv4hint/ipv6hint param itself from the target name's
+	// A/AAAA records and keeps it refreshed whenever those records change.
+	// Priority and the auto-hint flags are pointers so that a config written
+	// by an older plugin version (no such fields on disk) gets the same
+	// defaults as a fresh config (priority 1, hints on) while an explicit 0
+	// or false is still preserved.
+	HTTPSEnabled      bool             `json:"https_enabled"`
+	HTTPSPriority     *int             `json:"https_priority"`
+	HTTPSTargetName   string           `json:"https_target_name"`
+	HTTPSParams       []svcparam.Param `json:"https_params"`
+	HTTPSAutoIPv4Hint *bool            `json:"https_auto_ipv4_hint"`
+	HTTPSAutoIPv6Hint *bool            `json:"https_auto_ipv6_hint"`
+}
+
+// defaultHTTPSPriority is the service-mode priority used when none is set.
+const defaultHTTPSPriority = 1
+
+// HTTPSPriorityValue returns the configured HTTPS priority, or the default
+// when none is stored.
+func (c *Config) HTTPSPriorityValue() int {
+	if c.HTTPSPriority == nil {
+		return defaultHTTPSPriority
+	}
+	return *c.HTTPSPriority
+}
+
+// AutoIPv4HintEnabled reports whether Technitium's Automatic Hints option is
+// enabled for the ipv4hint param. Absent (nil) means on: both a fresh config
+// and a config file written before this option existed default to on.
+func (c *Config) AutoIPv4HintEnabled() bool {
+	return c.HTTPSAutoIPv4Hint == nil || *c.HTTPSAutoIPv4Hint
+}
+
+// AutoIPv6HintEnabled is AutoIPv4HintEnabled for the ipv6hint param.
+func (c *Config) AutoIPv6HintEnabled() bool {
+	return c.HTTPSAutoIPv6Hint == nil || *c.HTTPSAutoIPv6Hint
 }
 
 func defaultConfig() *Config {
@@ -64,7 +112,24 @@ func defaultConfig() *Config {
 		AAAAEnabled: false,
 		LANIPv6:     detectLocalIPv6(),
 		InstanceID:  newInstanceID(),
+		// HTTPS records are opt-in like AAAA records (off by default), but
+		// Technitium's Automatic Hints default to on wherever the option
+		// exists at all.
+		HTTPSEnabled:      false,
+		HTTPSPriority:     intPtr(defaultHTTPSPriority),
+		HTTPSTargetName:   "",
+		HTTPSParams:       nil,
+		HTTPSAutoIPv4Hint: boolPtr(true),
+		HTTPSAutoIPv6Hint: boolPtr(true),
 	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+func intPtr(n int) *int {
+	return &n
 }
 
 // detectLocalIP returns the local address the OS routing table would use to
@@ -253,6 +318,25 @@ func Validate(c *Config) error {
 	}
 	if c.AAAAEnabled && c.LANIPv6 == "" {
 		return errors.New("lan ipv6 target is required when AAAA is enabled")
+	}
+	// HTTPS settings are only validated while the toggle is on: when it is
+	// off they are inert, and rejecting a save because of a value nobody is
+	// using would just block unrelated edits.
+	if c.HTTPSEnabled {
+		if p := c.HTTPSPriorityValue(); p < 0 || p > 65535 {
+			return fmt.Errorf("https priority must be between 0 and 65535 (0 = alias mode), got %d", p)
+		}
+		seen := make(map[string]bool, len(c.HTTPSParams))
+		for _, p := range c.HTTPSParams {
+			if err := svcparam.ValidateParam(p.Key, p.Value); err != nil {
+				return err
+			}
+			k, _ := svcparam.NormalizeKey(p.Key)
+			if seen[k] {
+				return fmt.Errorf("HTTPS param %s appears more than once", k)
+			}
+			seen[k] = true
+		}
 	}
 	return nil
 }

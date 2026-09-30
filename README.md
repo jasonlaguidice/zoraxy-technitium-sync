@@ -1,7 +1,7 @@
 # zoraxy-technitium-sync
 
 A Zoraxy plugin that keeps [Technitium DNS Server](https://technitium.com/dns/)
-A/AAAA records in sync with Zoraxy's configured HTTP reverse-proxy host
+A/AAAA/HTTPS records in sync with Zoraxy's configured HTTP reverse-proxy host
 rules. It's a small, spiritual replacement for one feature of the
 discontinued [Mantrae](https://github.com/mizuchilabs/mantrae) project, which
 used to manage Traefik + Technitium together — this does the same job for
@@ -11,7 +11,9 @@ Every 30 seconds (configurable) it polls Zoraxy's own local plugin API for
 the list of enabled HTTP proxy host rules, and makes sure each hostname (plus
 any configured aliases) has an A record in Technitium pointing at your
 Zoraxy box's LAN IP. AAAA records are an optional global on/off toggle
-pointing at one shared IPv6 target. Records it creates are marked with an
+pointing at one shared IPv6 target, and HTTPS (RFC 9460) records are a second
+optional global toggle with their own priority, target name and parameters.
+Records it creates are marked with an
 ownership TXT record so it never touches DNS entries it didn't create itself,
 and removes records automatically when a proxy host rule is deleted or
 disabled.
@@ -22,8 +24,10 @@ disabled.
   local plugin API (there is no change-notification webhook for proxy host
   rules in the current Zoraxy plugin SDK, so polling is the only option).
 - **Technitium side**: uses Technitium's HTTP API (token auth) to add,
-  update and delete A/AAAA/TXT records.
-- **Ownership tracking**: before touching any A/AAAA record for a hostname,
+  update and delete A/AAAA/HTTPS/TXT records. A/AAAA changes are sent with
+  `updateSvcbHints=true` so Technitium keeps the Automatic Hints of HTTPS
+  records current when a LAN IP changes.
+- **Ownership tracking**: before touching any A/AAAA/HTTPS record for a hostname,
   the plugin manages a TXT record at `_ztsync.<hostname>` with value
   `heritage=zoraxy-technitium-sync,instance=<instanceID>`. It will only
   update or delete a record if that exact marker is present and matches its
@@ -90,7 +94,19 @@ panel covers:
 | LAN IPv4 target | auto-detected | The outbound-facing LAN IP of the box the plugin is running on, detected at first run; override in the UI if it picks the wrong interface |
 | AAAA enabled | off | Global toggle, applies to every managed host |
 | LAN IPv6 target | auto-detected | Same auto-detection as LAN IPv4, at first run; falls back to blank if none is found. Only required if AAAA is enabled |
+| HTTPS enabled | off | Global toggle: every managed host also gets one HTTPS record built from the settings below. Turning it off deletes the plugin's HTTPS records. The record is updated in place when any of these settings change |
+| HTTPS priority | `1` | `0`–`65535`. `0` is alias mode, where the params and hints have no effect; anything above `0` is service mode |
+| HTTPS target name | `.` | Blank means `.` (the record's own name). Comparison is case-insensitive and ignores a trailing dot |
+| HTTPS params | *(none)* | Key/value pairs (`mandatory`, `alpn`, `no-default-alpn`, `port`, `ipv4hint`, `ipv6hint`, `dohpath`), or choose **Unknown** to enter a numeric key code with a hex-string value. `alpn` and `mandatory` take comma-separated lists, `no-default-alpn` ignores its value, and each key may appear once |
+| Use automatic IPv4 hint | on | Technitium's *Automatic Hints*: Technitium resolves `ipv4hint` from the target's A records and refreshes it whenever they change. A manual `ipv4hint` param is still sent, but Technitium overwrites it |
+| Use automatic IPv6 hint | on | Same, for `ipv6hint` and AAAA records |
 | Instance ID | generated once | Used in the ownership TXT marker; read-only |
+
+The HTTPS record uses the same Record TTL as the A/AAAA records. It is managed
+as exactly one record per host, and a hostname that already has an HTTPS
+record without the plugin's ownership marker is skipped, like A/AAAA. Note
+that automatic hints resolve from the target name's A/AAAA records, so they
+only apply in service mode (priority above `0`).
 
 The status panel on the same page shows the last poll time, last error (if
 any), how many records are currently managed, and the hosts created,
